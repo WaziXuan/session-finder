@@ -49,7 +49,7 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.10.30.5"
+VERSION = "2026.10.30.6"
 # The installer puts the script into the first client that has it: ~/.workbuddy,
 # else ~/.claude, ~/.codex, ~/.codebuddy. The other clients get only SKILL.md.
 CLIENTS = (".workbuddy", ".claude", ".codex", ".codebuddy")
@@ -62,11 +62,20 @@ SYNC_ROOT_FILE = STATE_DIR / "sync_root"
 
 def _ui_zh() -> bool:
     """Chinese output on a Chinese system; SESSION_FINDER_LANG=zh|en overrides.
-    On Windows the UI language decides (Git Bash's LANG says nothing about it)."""
+    On Windows the top of the user's language list (Settings > Language) decides; it
+    can differ from the legacy display language. Git Bash's LANG says nothing here."""
     v = os.environ.get("SESSION_FINDER_LANG", "").strip().lower()
     if v:
         return v.startswith("zh")
     if os.name == "nt":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\International\User Profile") as k:
+                langs = winreg.QueryValueEx(k, "Languages")[0]
+            if langs:
+                return langs[0].lower().startswith("zh")
+        except OSError:
+            pass
         try:
             import ctypes
             return ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3FF == 0x04
