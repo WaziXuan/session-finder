@@ -33,7 +33,7 @@ bash install.sh
 安装脚本把脚本和装了 `zstandard` 的 venv（读 Codex 的压缩会话要用）放进一个客户端的
 skills 文件夹：有 WorkBuddy 就放 `~/.workbuddy/skills/session-finder/`，没有就按
 `~/.claude`、`~/.codex`、`~/.codebuddy` 的顺序放进第一个装了的；其他装了的客户端各放一份
-指向那里的 `SKILL.md`。不会有后台进程，也不会往外传任何东西。
+指向那里的 `SKILL.md`。之后新装的客户端，在 session-finder 下次运行时会自动补上 `SKILL.md`，不用重装。不会有后台进程，也不会往外传任何东西。
 装完**新开一个会话**，skill 才会加载。
 
 想让 agent 替你装，把这段贴给它：

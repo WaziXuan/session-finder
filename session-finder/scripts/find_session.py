@@ -49,7 +49,7 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.10.30.6"
+VERSION = "2026.10.30.7"
 # The installer puts the script into the first client that has it: ~/.workbuddy,
 # else ~/.claude, ~/.codex, ~/.codebuddy. The other clients get only SKILL.md.
 CLIENTS = (".workbuddy", ".claude", ".codex", ".codebuddy")
@@ -877,6 +877,31 @@ def skill_md(text: str) -> str:
     return text.replace(".workbuddy/skills/session-finder", f"{SKILL_HOME.parent.parent.name}/skills/session-finder")
 
 
+def installed() -> bool:
+    """An installed copy sits in <client>/skills/session-finder/scripts; a checkout doesn't."""
+    return SKILL_HOME.parent.name == "skills"
+
+
+def spread_skill() -> None:
+    """A client installed after session-finder gets SKILL.md the next time this runs,
+    without rerunning the installer. Only fills in missing copies."""
+    if not installed():
+        return
+    try:
+        skill = None
+        for client in CLIENTS:
+            d = HOME / client / "skills" / "session-finder"
+            if not (HOME / client).is_dir() or (d / "SKILL.md").exists():
+                continue
+            if skill is None:
+                skill = (SKILL_HOME / "SKILL.md").read_text(encoding="utf-8")
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "SKILL.md").write_text(skill, encoding="utf-8", newline="")
+            log_line(f"{HOST}: SKILL.md -> {d}")
+    except OSError:
+        pass
+
+
 def self_update() -> bool:
     """Install a newer find_session.py (and SKILL.md for every client) from
     SessionSync\\_install over this copy. Returns True if it did.
@@ -884,8 +909,7 @@ def self_update() -> bool:
     Only the installed copy updates itself, never the kit source or _install.
     """
     me = Path(__file__).resolve()
-    # An installed copy sits in <client>/skills/session-finder/scripts; a checkout doesn't.
-    if os.environ.get("SESSION_FINDER_NO_UPDATE") or SKILL_HOME.parent.name != "skills":
+    if os.environ.get("SESSION_FINDER_NO_UPDATE") or not installed():
         return False
     root = cloud_root()
     if not root:
@@ -909,7 +933,8 @@ def self_update() -> bool:
         skill = skill_md((bundle / "SKILL.md").read_text(encoding="utf-8"))
         for client in CLIENTS:
             d = HOME / client / "skills" / "session-finder"
-            if d.is_dir():
+            if (HOME / client).is_dir():
+                d.mkdir(parents=True, exist_ok=True)
                 (d / "SKILL.md").write_text(skill, encoding="utf-8", newline="")
     except OSError as e:
         log_line(f"{HOST}: self-update to {new} failed: {e}")
@@ -1252,6 +1277,7 @@ def cmd_watch(a) -> int:
             now = time.time()
             if now - last_check >= UPDATE_CHECK_SECS:
                 last_check = now
+                spread_skill()
                 if self_update():
                     # Exit so the new code runs: the scheduled task relaunches the
                     # watcher within its 5-minute repeat, and that one starts with a
@@ -1343,6 +1369,7 @@ def main() -> int:
     p.add_argument("--interval", type=int, default=15, help=L("扫描间隔秒数", "seconds between scans"))
     p.set_defaults(fn=cmd_watch)
 
+    spread_skill()
     # Update before parsing, so a flag that only the newer version knows still works.
     if sys.argv[1:2] != ["watch"] and self_update():
         # Rerun this same command with the code just installed.

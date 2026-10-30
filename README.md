@@ -49,7 +49,8 @@ bash install.sh
 The installer puts the script and a venv with `zstandard` (Codex's compressed sessions
 need it) into one client's skills folder — `~/.workbuddy/skills/session-finder/` if you
 have WorkBuddy, else the first of `~/.claude`, `~/.codex`, `~/.codebuddy` — and a
-`SKILL.md` pointing there into each of the other clients you have. Nothing runs in the background and nothing leaves your machine.
+`SKILL.md` pointing there into each of the other clients you have. A client you install
+later gets its `SKILL.md` the next time session-finder runs; no need to reinstall. Nothing runs in the background and nothing leaves your machine.
 **Start a new agent session** afterwards so the skill is loaded.
 
 Prefer to let your agent do it? Paste this:
