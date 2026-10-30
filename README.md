@@ -46,10 +46,10 @@ cd session-finder
 bash install.sh
 ```
 
-The installer copies the skill to `~/.workbuddy/skills/session-finder/` (script + a venv
-with `zstandard`, which Codex's compressed sessions need) and puts `SKILL.md` into
-`~/.claude/skills/`, `~/.codex/skills/` and `~/.codebuddy/skills/` for whichever of those
-clients you have. Nothing runs in the background and nothing leaves your machine.
+The installer puts the script and a venv with `zstandard` (Codex's compressed sessions
+need it) into one client's skills folder — `~/.workbuddy/skills/session-finder/` if you
+have WorkBuddy, else the first of `~/.claude`, `~/.codex`, `~/.codebuddy` — and a
+`SKILL.md` pointing there into each of the other clients you have. Nothing runs in the background and nothing leaves your machine.
 **Start a new agent session** afterwards so the skill is loaded.
 
 Prefer to let your agent do it? Paste this:
@@ -66,8 +66,8 @@ Just ask your agent in plain words — "find the session where we set up the CI"
 Or run it yourself:
 
 ```bash
-S=~/.workbuddy/skills/session-finder/scripts/find_session.py
-PY=~/.workbuddy/skills/session-finder/.venv/bin/python          # Windows: .venv/Scripts/python.exe
+S=~/.claude/skills/session-finder/scripts/find_session.py     # the folder the installer printed
+PY=~/.claude/skills/session-finder/.venv/bin/python             # Windows: .venv/Scripts/python.exe
 
 $PY $S list                        # all clients, newest first; tags like cx|01a16eae, cl|11c4d28c
 $PY $S list --source cl            # all | wb | cx | cl | cb
@@ -136,19 +136,21 @@ from `<SessionSync>/_install` within 10 minutes.
   `AGENTS.md instructions`, Claude Code tool results) are filtered out of "what you said".
 - Codex's `session_index.jsonl` names only about half the sessions; the rest are titled
   by their first prompt.
-- Script messages are partly in Chinese for now.
+- Messages follow the system language (Chinese or English); set `SESSION_FINDER_LANG=en`
+  or `zh` to choose.
 
 ## Uninstall
 
 ```powershell
 Unregister-ScheduledTask SessionFinderSync -Confirm:$false -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force "$env:USERPROFILE\.workbuddy\skills\session-finder", "$env:LOCALAPPDATA\session-finder"
-Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\skills\session-finder", "$env:USERPROFILE\.codex\skills\session-finder", "$env:USERPROFILE\.codebuddy\skills\session-finder" -ErrorAction SilentlyContinue
+'.workbuddy', '.claude', '.codex', '.codebuddy' | ForEach-Object {
+    Remove-Item -Recurse -Force "$env:USERPROFILE\$_\skills\session-finder" -ErrorAction SilentlyContinue }
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\session-finder"
 ```
 
 ```bash
 systemctl --user disable --now session-finder-sync 2>/dev/null
-rm -rf ~/.workbuddy/skills/session-finder ~/.cache/session-finder ~/.{claude,codex,codebuddy}/skills/session-finder
+rm -rf ~/.{workbuddy,claude,codex,codebuddy}/skills/session-finder ~/.cache/session-finder
 ```
 
 ## License

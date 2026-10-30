@@ -3,7 +3,10 @@
 # Bump VERSION in find_session.py first, or nothing updates.
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$py = Join-Path $env:USERPROFILE '.workbuddy\skills\session-finder\.venv\Scripts\python.exe'
+$py = @('.workbuddy', '.claude', '.codex', '.codebuddy') |
+    ForEach-Object { Join-Path $env:USERPROFILE "$_\skills\session-finder\.venv\Scripts\python.exe" } |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $py) { throw 'session-finder is not installed on this PC (run install.ps1 first)' }
 $fs = Join-Path $here 'session-finder\scripts\find_session.py'
 
 $code = Get-Content $fs -Raw -Encoding utf8

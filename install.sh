@@ -19,20 +19,37 @@ while [ $# -gt 0 ]; do
 done
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEST="$HOME/.workbuddy/skills/session-finder"
-VENV="$DEST/.venv"
 STATE="${XDG_CACHE_HOME:-$HOME/.cache}/session-finder"
+
+# The script and venv go into one client's skills folder: where an earlier install
+# already put them, else WorkBuddy, Claude Code, Codex, CodeBuddy - the first one
+# installed. The other clients get only SKILL.md, pointing there.
+CLIENTS=".workbuddy .claude .codex .codebuddy"
+HOME_CLIENT=""
+for c in $CLIENTS; do
+  if [ -f "$HOME/$c/skills/session-finder/scripts/find_session.py" ]; then HOME_CLIENT="$c"; break; fi
+done
+if [ -z "$HOME_CLIENT" ]; then
+  for c in $CLIENTS; do
+    if [ -d "$HOME/$c" ]; then HOME_CLIENT="$c"; break; fi
+  done
+fi
+if [ -z "$HOME_CLIENT" ]; then
+  echo "No supported client found (WorkBuddy, Claude Code, Codex or CodeBuddy CLI): install one first." >&2
+  exit 1
+fi
+DEST="$HOME/$HOME_CLIENT/skills/session-finder"
+VENV="$DEST/.venv"
 FS="$DEST/scripts/find_session.py"
+skill_md() { sed "s#\.workbuddy/skills/session-finder#$HOME_CLIENT/skills/session-finder#g" "$HERE/session-finder/SKILL.md" > "$1"; }
 
 echo "[1/4] Copying the skill to $DEST"
 mkdir -p "$DEST/scripts"
-cp "$HERE/session-finder/SKILL.md" "$DEST/SKILL.md"
+skill_md "$DEST/SKILL.md"
 cp "$HERE/session-finder/scripts/find_session.py" "$FS"
 
-# Claude Code / Codex / CodeBuddy get only SKILL.md; the script and venv above are shared.
-# A client that isn't installed is skipped.
-for client in .claude .codex .codebuddy; do
-  [ -d "$HOME/$client" ] || continue
+for client in $CLIENTS; do
+  [ "$client" != "$HOME_CLIENT" ] && [ -d "$HOME/$client" ] || continue
   sk="$HOME/$client/skills/session-finder"
   if [ -d "$sk" ] && ls -A "$sk" | grep -qv '^SKILL.md$'; then
     bak="$STATE/replaced/${client#.}-$(date +%Y%m%d-%H%M%S)"
@@ -41,7 +58,7 @@ for client in .claude .codex .codebuddy; do
     echo "      moved the old $sk to $bak"
   fi
   mkdir -p "$sk"
-  cp "$HERE/session-finder/SKILL.md" "$sk/SKILL.md"
+  skill_md "$sk/SKILL.md"
   echo "      SKILL.md -> $sk"
 done
 

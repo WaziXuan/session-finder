@@ -49,12 +49,40 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.10.30.4"
-SKILL_HOME = HOME / ".workbuddy" / "skills" / "session-finder"
+VERSION = "2026.10.30.5"
+# The installer puts the script into the first client that has it: ~/.workbuddy,
+# else ~/.claude, ~/.codex, ~/.codebuddy. The other clients get only SKILL.md.
+CLIENTS = (".workbuddy", ".claude", ".codex", ".codebuddy")
+SKILL_HOME = Path(__file__).resolve().parents[1]
 END_MARK = b"# end of find_session.py"  # must stay the file's last line
 
 
 SYNC_ROOT_FILE = STATE_DIR / "sync_root"
+
+
+def _ui_zh() -> bool:
+    """Chinese output on a Chinese system; SESSION_FINDER_LANG=zh|en overrides.
+    On Windows the UI language decides (Git Bash's LANG says nothing about it)."""
+    v = os.environ.get("SESSION_FINDER_LANG", "").strip().lower()
+    if v:
+        return v.startswith("zh")
+    if os.name == "nt":
+        try:
+            import ctypes
+            return ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3FF == 0x04
+        except Exception:
+            return False
+    for e in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"):
+        if os.environ.get(e):
+            return os.environ[e].lower().startswith("zh")
+    return False
+
+
+ZH = _ui_zh()
+
+
+def L(zh: str, en: str) -> str:
+    return zh if ZH else en
 
 
 def cloud_root() -> Path | None:
@@ -143,10 +171,10 @@ def open_lines(path):
         try:
             import zstandard as zstd
         except ImportError as e:  # pragma: no cover
-            raise RuntimeError(
+            raise RuntimeError(L(
+                "这个会话是 zstd 压缩的，当前 Python 没装 zstandard：用 skill 的 .venv 里的 python，或 pip install zstandard",
                 "session is zstd-compressed and `zstandard` is not installed for "
-                "this interpreter; pip install zstandard, or use the envs/default python"
-            ) from e
+                "this interpreter; use the skill's .venv python, or pip install zstandard")) from e
         with path.open("rb") as f:
             with zstd.ZstdDecompressor().stream_reader(f) as r:
                 yield from io.TextIOWrapper(r, encoding="utf-8", errors="replace")
@@ -554,7 +582,7 @@ def fmt(rows: list[dict], full_id: bool = False) -> str:
         if r["cwd"]:
             out.append(f"{'':{w}} {'':16}  {'':>7}  cwd={r['cwd']}")
         if r["first_user"]:
-            out.append(f"{'':{w}} {'':16}  {'':>7}  首问: {r['first_user'].splitlines()[0][:100]}")
+            out.append(f"{'':{w}} {'':16}  {'':>7}  {L('首问', 'first')}: {r['first_user'].splitlines()[0][:100]}")
     return "\n".join(out)
 
 
@@ -565,16 +593,17 @@ def resolve(ref: str, host: str = "all"):
             k, host = k.split("@", 1)
         k = norm_source(k)
         if k not in SOURCES:
-            print(f"unknown source prefix: {ref.split('|')[0]} (use wb / cx / cl / cb, optionally @HOST)")
+            print(L(f"未知来源前缀：{ref.split('|')[0]}（用 wb / cx / cl / cb，可加 @电脑名）",
+                    f"unknown source prefix: {ref.split('|')[0]} (use wb / cx / cl / cb, optionally @HOST)"))
             return None
         hits = [r for r in index(k, host) if r["id"].startswith(sid)]
     else:
         hits = [r for r in index(None, host) if r["id"].startswith(ref)]
     if not hits:
-        print(f"no session matched: {ref}")
+        print(L(f"没有匹配的会话：{ref}", f"no session matched: {ref}"))
         return None
     if len(hits) > 1:
-        print(f"ambiguous prefix, {len(hits)} candidates:\n")
+        print(L(f"前缀不唯一，有 {len(hits)} 个候选（用更长的前缀）：\n", f"ambiguous prefix, {len(hits)} candidates:\n"))
         print(fmt(hits[:10]))
         return None
     r = hits[0]
@@ -590,7 +619,7 @@ def chunk_label(path) -> str:
 
 def cmd_list(a) -> int:
     rows = index(norm_source(a.source), a.host)
-    print(f"# {len(rows)} sessions (source={a.source}, host={a.host})\n")
+    print(L(f"# {len(rows)} 个会话（source={a.source}, host={a.host}）\n", f"# {len(rows)} sessions (source={a.source}, host={a.host})\n"))
     print(fmt(rows[: a.limit]))
     return 0
 
@@ -615,10 +644,10 @@ def cmd_find(a) -> int:
         if score:
             scored.append((score, r))
     if not scored:
-        print(f"no session matched: {' '.join(a.keywords)}")
+        print(L(f"没有匹配的会话：{' '.join(a.keywords)}", f"no session matched: {' '.join(a.keywords)}"))
         return 1
     scored.sort(key=lambda x: (-x[0], x[1]["mtime"]))
-    print(f"# {len(scored)} match(es), best first\n")
+    print(L(f"# {len(scored)} 个匹配，最相关的在前\n", f"# {len(scored)} match(es), best first\n"))
     print(fmt([r for _, r in scored[: a.limit]]))
     return 0
 
@@ -679,20 +708,22 @@ def cmd_grep(a) -> int:
         if found and seen == set(words):
             hits.append((r, found))
     if no_text:
-        print(f"(skipped {no_text} cloud sessions that have no text extract yet; --deep reads them raw)")
+        print(L(f"（跳过了 {no_text} 个还没有文本摘录的云端会话；--deep 会读原始记录）",
+                f"(skipped {no_text} cloud sessions that have no text extract yet; --deep reads them raw)"))
     if not hits:
-        print(f"no session mentions: {' '.join(a.keywords)}")
+        print(L(f"没有会话提到：{' '.join(a.keywords)}", f"no session mentions: {' '.join(a.keywords)}"))
         return 1
     hits.sort(key=lambda h: (len(h[1]), h[0]["mtime"]), reverse=True)
-    print(f"# {len(hits)} session(s) mention {' + '.join(a.keywords)}, most hits first\n")
+    print(L(f"# {len(hits)} 个会话提到 {' + '.join(a.keywords)}，命中多的在前\n",
+            f"# {len(hits)} session(s) mention {' + '.join(a.keywords)}, most hits first\n"))
     for r, found in hits[: a.limit]:
-        print(f"{tag_of(r)}  {r['mtime']}  {r['title']}  ({len(found)} hits)")
+        print(f"{tag_of(r)}  {r['mtime']}  {r['title']}  ({len(found)} {L('处命中', 'hits')})")
         best = sorted(found, key=lambda f: -f[0])[: a.per]
         for _, ts, role, txt in best:
             print(f"    [{stamp(ts)}] {role:9s} {snippet(txt, words, a.context)}")
         print()
     if len(hits) > a.limit:
-        print(f"… {len(hits) - a.limit} more (--limit)")
+        print(L(f"… 还有 {len(hits) - a.limit} 个（--limit 调整）", f"… {len(hits) - a.limit} more (--limit)"))
     return 0
 
 
@@ -707,7 +738,7 @@ def cmd_show(a) -> int:
     def emit(ts, role, txt):
         body = " ".join(txt.split())
         if len(body) > a.max_chars:
-            body = body[: a.max_chars] + f" …[+{len(txt) - a.max_chars}字]"
+            body = body[: a.max_chars] + f" …[+{len(txt) - a.max_chars}{L('字', ' chars')}]"
         print(f"[{stamp(ts)}] {role:9s} {body}")
 
     shown = 0
@@ -724,17 +755,18 @@ def cmd_show(a) -> int:
                 continue
             emit(ts, role, txt)
             if shown >= a.head:
-                print(f"… 已截断，共 {shown} 条（--head 调整）")
+                print(L(f"… 已截断，共 {shown} 条（--head 调整）", f"… truncated at {shown} messages (--head)"))
                 break
     except RuntimeError as e:
-        print(f"error: {e}")
+        print(L(f"出错：{e}", f"error: {e}"))
         return 1
     if tail is not None and shown > len(tail):
-        print(f"… 前面还有 {shown - len(tail)} 条，只给最后 {len(tail)} 条（--tail 调整）")
+        print(L(f"… 前面还有 {shown - len(tail)} 条，只给最后 {len(tail)} 条（--tail 调整）",
+                f"… {shown - len(tail)} earlier messages skipped, showing the last {len(tail)} (--tail)"))
     for m in tail or ():
         emit(*m)
     if not shown:
-        print("(no message matched the filter)")
+        print(L("（没有符合条件的消息）", "(no message matched the filter)"))
         return 1
     return 0
 
@@ -754,10 +786,10 @@ def cmd_files(a) -> int:
                     continue
                 counts[p] = counts.get(p, 0) + 1
     except RuntimeError as e:
-        print(f"error: {e}")
+        print(L(f"出错：{e}", f"error: {e}"))
         return 1
     if not counts:
-        print("(no file paths found)")
+        print(L("（没找到文件路径）", "(no file paths found)"))
         return 1
     print(f"# {len(counts)} distinct paths · {src.label} @ {host}\n")
     for p, c in sorted(counts.items(), key=lambda x: -x[1])[: a.limit]:
@@ -831,15 +863,20 @@ def version_key(v: str) -> tuple:
     return tuple(int(x) for x in re.findall(r"\d+", v))
 
 
+def skill_md(text: str) -> str:
+    """SKILL.md as shipped points at ~/.workbuddy; point it at where the script really is."""
+    return text.replace(".workbuddy/skills/session-finder", f"{SKILL_HOME.parent.parent.name}/skills/session-finder")
+
+
 def self_update() -> bool:
     """Install a newer find_session.py (and SKILL.md for every client) from
     SessionSync\\_install over this copy. Returns True if it did.
 
     Only the installed copy updates itself, never the kit source or _install.
     """
-    import shutil
     me = Path(__file__).resolve()
-    if os.environ.get("SESSION_FINDER_NO_UPDATE") or SKILL_HOME.resolve() not in me.parents:
+    # An installed copy sits in <client>/skills/session-finder/scripts; a checkout doesn't.
+    if os.environ.get("SESSION_FINDER_NO_UPDATE") or SKILL_HOME.parent.name != "skills":
         return False
     root = cloud_root()
     if not root:
@@ -860,15 +897,17 @@ def self_update() -> bool:
     new = m.group(1).decode()
     try:
         write_atomic(me, data)
-        for client in (".workbuddy", ".claude", ".codex", ".codebuddy"):
+        skill = skill_md((bundle / "SKILL.md").read_text(encoding="utf-8"))
+        for client in CLIENTS:
             d = HOME / client / "skills" / "session-finder"
             if d.is_dir():
-                shutil.copyfile(bundle / "SKILL.md", d / "SKILL.md")
+                (d / "SKILL.md").write_text(skill, encoding="utf-8", newline="")
     except OSError as e:
         log_line(f"{HOST}: self-update to {new} failed: {e}")
         return False
     log_line(f"{HOST}: self-update {VERSION} -> {new}")
-    print(f"(session-finder 已从同步文件夹自动更新：{VERSION} -> {new})", file=sys.stderr)
+    print(L(f"(session-finder 已从同步文件夹自动更新：{VERSION} -> {new})",
+            f"(session-finder updated itself from the sync folder: {VERSION} -> {new})"), file=sys.stderr)
     return True
 
 
@@ -1133,15 +1172,17 @@ def locked_sync(only=None, wait: float = 300) -> tuple[int, str]:
         lock.release()
 
 
-NO_SYNC = ("多机同步没有开启（只搜本机不需要它）。要开启：find_session.py sync-root <同步文件夹>，"
-           "或设环境变量 SESSION_SYNC_ROOT。")
+NO_SYNC = L("多机同步没有开启（只搜本机不需要它）。要开启：find_session.py sync-root <同步文件夹>，"
+            "或设环境变量 SESSION_SYNC_ROOT。",
+            "Multi-machine sync is off (searching this machine doesn't need it). To turn it on: "
+            "find_session.py sync-root <shared folder>, or set SESSION_SYNC_ROOT.")
 
 
 def cmd_sync_root(a) -> int:
     """Show, set or clear the SessionSync folder."""
     if a.off:
         SYNC_ROOT_FILE.unlink(missing_ok=True)
-        print("多机同步已关闭（同步文件夹里已有的文件不动）。")
+        print(L("多机同步已关闭（同步文件夹里已有的文件不动）。", "Multi-machine sync is off (files already in the sync folder are left alone)."))
         return 0
     if a.path:
         root = Path(a.path).expanduser().resolve()
@@ -1162,7 +1203,7 @@ def cmd_sync(a) -> int:
     try:
         import zstandard  # noqa: F401
     except ImportError:
-        print("sync needs `zstandard`; run with the skill's .venv python")
+        print(L("sync 需要 zstandard：用 skill 的 .venv 里的 python 运行", "sync needs `zstandard`; run with the skill's .venv python"))
         return 1
     try:
         _, msg = locked_sync()
@@ -1235,61 +1276,62 @@ def cmd_watch(a) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Find and read agent sessions (wb / cx / cl / cb), local and synced from other machines")
+    ap = argparse.ArgumentParser(description=L("查找和读取 agent 会话（wb / cx / cl / cb），包括本机和同步来的其他机器",
+                                             "Find and read agent sessions (wb / cx / cl / cb), local and synced from other machines"))
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("list", help="按时间倒序列出会话")
+    p = sub.add_parser("list", help=L("按时间倒序列出会话", "list sessions, newest first"))
     p.add_argument("--source", default="all", help="all|wb|cx|cl|cb")
-    p.add_argument("--host", default="all", help="all|local|<电脑名>（云端其他机器）")
+    p.add_argument("--host", default="all", help=L("all|local|<电脑名>（同步来的其他机器）", "all|local|<computer name> (other machines, synced)"))
     p.add_argument("--limit", type=int, default=15)
     p.set_defaults(fn=cmd_list)
 
-    p = sub.add_parser("find", help="按标题/首问关键词搜索")
+    p = sub.add_parser("find", help=L("按标题/首问关键词搜索", "search titles and first prompts"))
     p.add_argument("keywords", nargs="+")
     p.add_argument("--source", default="all", help="all|wb|cx|cl|cb")
-    p.add_argument("--host", default="all", help="all|local|<电脑名>（云端其他机器）")
+    p.add_argument("--host", default="all", help=L("all|local|<电脑名>（同步来的其他机器）", "all|local|<computer name> (other machines, synced)"))
     p.add_argument("--limit", type=int, default=8)
     p.set_defaults(fn=cmd_find)
 
-    p = sub.add_parser("grep", help="按对话内容全文搜索（标题不记得时用）；所有关键词都要在同一会话中出现")
+    p = sub.add_parser("grep", help=L("按对话内容全文搜索（标题不记得时用）；所有关键词都要在同一会话中出现", "full-text search of what was said; every word must occur in the same session"))
     p.add_argument("keywords", nargs="+")
     p.add_argument("--source", default="all", help="all|wb|cx|cl|cb")
-    p.add_argument("--host", default="all", help="all|local|<电脑名>")
+    p.add_argument("--host", default="all", help=L("all|local|<电脑名>", "all|local|<computer name>"))
     p.add_argument("--role", choices=["user", "assistant", "all"], default="all")
-    p.add_argument("--limit", type=int, default=8, help="最多列几个会话")
-    p.add_argument("--per", type=int, default=3, help="每个会话最多几条命中")
-    p.add_argument("--context", type=int, default=80, help="命中前后各显示多少字")
+    p.add_argument("--limit", type=int, default=8, help=L("最多列几个会话", "max sessions to list"))
+    p.add_argument("--per", type=int, default=3, help=L("每个会话最多几条命中", "max hits per session"))
+    p.add_argument("--context", type=int, default=80, help=L("命中前后各显示多少字", "characters of context around each hit"))
     p.add_argument("--deep", action="store_true",
-                   help="连工具调用/输出一起搜（读原始记录；云端会话会被整份下载）")
+                   help=L("连工具调用/输出一起搜（读原始记录；云端会话会被整份下载）", "also search tool calls and output (reads raw transcripts; synced ones get downloaded)"))
     p.set_defaults(fn=cmd_grep)
 
-    p = sub.add_parser("show", help="读取某个会话（默认只给人类说的话，截断输出）")
-    p.add_argument("session", help="'cx|<id>' 或裸 id 前缀")
+    p = sub.add_parser("show", help=L("读取某个会话（默认只给人类说的话，截断输出）", "read a session (what the human said by default, truncated)"))
+    p.add_argument("session", help=L("'cx|<id>' 或裸 id 前缀", "'cx|<id>' or a bare id prefix"))
     p.add_argument("--role", choices=["user", "assistant", "all"], default="user")
     p.add_argument("--head", type=int, default=20)
-    p.add_argument("--tail", type=int, default=0, help="只给最后 N 条（忽略 --head）；接着某个会话干活时用")
+    p.add_argument("--tail", type=int, default=0, help=L("只给最后 N 条（忽略 --head）；接着某个会话干活时用", "only the last N messages (overrides --head); for continuing a session"))
     p.add_argument("--max-chars", type=int, default=600)
     p.add_argument("--grep", default=None)
-    p.add_argument("--host", default="all", help="all|local|<电脑名>")
+    p.add_argument("--host", default="all", help=L("all|local|<电脑名>", "all|local|<computer name>"))
     p.set_defaults(fn=cmd_show)
 
-    p = sub.add_parser("files", help="列出会话中出现过的文件路径")
+    p = sub.add_parser("files", help=L("列出会话中出现过的文件路径", "list file paths the session mentions"))
     p.add_argument("session")
     p.add_argument("--limit", type=int, default=30)
-    p.add_argument("--host", default="all", help="all|local|<电脑名>")
+    p.add_argument("--host", default="all", help=L("all|local|<电脑名>", "all|local|<computer name>"))
     p.set_defaults(fn=cmd_files)
 
-    p = sub.add_parser("sync", help="把本机会话压缩推送到同步文件夹 SessionSync/<电脑名>（需先 sync-root）")
+    p = sub.add_parser("sync", help=L("把本机会话压缩推送到同步文件夹 SessionSync/<电脑名>（需先 sync-root）", "push this machine's sessions to SessionSync/<computer name> (needs sync-root)"))
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(fn=cmd_sync)
 
-    p = sub.add_parser("sync-root", help="查看/设置/关闭多机同步文件夹（不设置就只用本机）")
-    p.add_argument("path", nargs="?", help="同步文件夹，例如 OneDrive 下的 SessionSync")
-    p.add_argument("--off", action="store_true", help="关闭同步")
+    p = sub.add_parser("sync-root", help=L("查看/设置/关闭多机同步文件夹（不设置就只用本机）", "show / set / turn off the multi-machine sync folder (unset = this machine only)"))
+    p.add_argument("path", nargs="?", help=L("同步文件夹，例如 OneDrive 下的 SessionSync", "the shared folder, e.g. SessionSync in OneDrive"))
+    p.add_argument("--off", action="store_true", help=L("关闭同步", "turn sync off"))
     p.set_defaults(fn=cmd_sync_root)
 
-    p = sub.add_parser("watch", help="常驻：会话一有变化（停写 1 分钟或最多 5 分钟）就增量推送")
-    p.add_argument("--interval", type=int, default=15, help="扫描间隔秒数")
+    p = sub.add_parser("watch", help=L("常驻：会话一有变化（停写 1 分钟或最多 5 分钟）就增量推送", "stay running; push a session 1 min after it stops changing (5 min at most)"))
+    p.add_argument("--interval", type=int, default=15, help=L("扫描间隔秒数", "seconds between scans"))
     p.set_defaults(fn=cmd_watch)
 
     # Update before parsing, so a flag that only the newer version knows still works.

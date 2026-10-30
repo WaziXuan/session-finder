@@ -24,9 +24,8 @@ own file tools — use the script.
 ## Run it with the right interpreter
 
 Codex compresses most rollouts with zstd, so the script needs `zstandard`.
-The script and its venv live only under `~/.workbuddy/skills/session-finder/`, even
-when this SKILL.md was loaded from `~/.claude/skills`, `~/.codex/skills` or
-`~/.codebuddy/skills` — always use the paths below.
+The script and its venv live only in `~/.workbuddy/skills/session-finder/`; the copies of
+this SKILL.md in other clients' skills folders all point there — always use the paths below.
 
 ```bash
 S="$HOME/.workbuddy/skills/session-finder/scripts/find_session.py"

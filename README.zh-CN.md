@@ -30,9 +30,10 @@ cd session-finder
 bash install.sh
 ```
 
-安装脚本把 skill 拷到 `~/.workbuddy/skills/session-finder/`（脚本 + 装了 `zstandard` 的 venv，
-读 Codex 的压缩会话要用），再把 `SKILL.md` 放进你装了的客户端：`~/.claude/skills/`、
-`~/.codex/skills/`、`~/.codebuddy/skills/`。不会有后台进程，也不会往外传任何东西。
+安装脚本把脚本和装了 `zstandard` 的 venv（读 Codex 的压缩会话要用）放进一个客户端的
+skills 文件夹：有 WorkBuddy 就放 `~/.workbuddy/skills/session-finder/`，没有就按
+`~/.claude`、`~/.codex`、`~/.codebuddy` 的顺序放进第一个装了的；其他装了的客户端各放一份
+指向那里的 `SKILL.md`。不会有后台进程，也不会往外传任何东西。
 装完**新开一个会话**，skill 才会加载。
 
 想让 agent 替你装，把这段贴给它：
@@ -47,7 +48,7 @@ bash install.sh
 「接着昨天那个重构会话干」。也可以自己跑：
 
 ```bash
-S=~/.workbuddy/skills/session-finder/scripts/find_session.py
+S=~/.workbuddy/skills/session-finder/scripts/find_session.py  # 安装时打印的那个目录
 PY=~/.workbuddy/skills/session-finder/.venv/bin/python          # Windows: .venv/Scripts/python.exe
 
 $PY $S list                        # 四个来源按时间倒序，标签如 cx|01a16eae、cl|11c4d28c
@@ -110,18 +111,20 @@ macOS 没有自带服务：需要自己用 launchd 在登录时跑 `find_session
   注入的提示词（WorkBuddy 的 `<user_info>`、Codex 的 `AGENTS.md instructions`、Claude Code
   的工具结果）不算作「你说的话」。
 - Codex 的 `session_index.jsonl` 只给约一半会话起了名字，其余用首问当标题。
+- 输出语言跟随系统（中文或英文）；设 `SESSION_FINDER_LANG=zh` 或 `en` 可以手动指定。
 
 ## 卸载
 
 ```powershell
 Unregister-ScheduledTask SessionFinderSync -Confirm:$false -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force "$env:USERPROFILE\.workbuddy\skills\session-finder", "$env:LOCALAPPDATA\session-finder"
-Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\skills\session-finder", "$env:USERPROFILE\.codex\skills\session-finder", "$env:USERPROFILE\.codebuddy\skills\session-finder" -ErrorAction SilentlyContinue
+'.workbuddy', '.claude', '.codex', '.codebuddy' | ForEach-Object {
+    Remove-Item -Recurse -Force "$env:USERPROFILE\$_\skills\session-finder" -ErrorAction SilentlyContinue }
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\session-finder"
 ```
 
 ```bash
 systemctl --user disable --now session-finder-sync 2>/dev/null
-rm -rf ~/.workbuddy/skills/session-finder ~/.cache/session-finder ~/.{claude,codex,codebuddy}/skills/session-finder
+rm -rf ~/.{workbuddy,claude,codex,codebuddy}/skills/session-finder ~/.cache/session-finder
 ```
 
 ## 协议

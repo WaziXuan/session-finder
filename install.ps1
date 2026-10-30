@@ -12,21 +12,31 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$dest = Join-Path $env:USERPROFILE '.workbuddy\skills\session-finder'
+
+# The script and venv go into one client's skills folder: where an earlier install
+# already put them, else WorkBuddy, Claude Code, Codex, CodeBuddy - the first one
+# installed. The other clients get only SKILL.md, pointing there.
+$clients = @('.workbuddy', '.claude', '.codex', '.codebuddy')
+$present = @($clients | Where-Object { Test-Path (Join-Path $env:USERPROFILE $_) })
+if (-not $present) { throw 'No supported client found (WorkBuddy, Claude Code, Codex or CodeBuddy CLI): install one first.' }
+$homeClient = $clients | Where-Object { Test-Path (Join-Path $env:USERPROFILE "$_\skills\session-finder\scripts\find_session.py") } |
+    Select-Object -First 1
+if (-not $homeClient) { $homeClient = $present[0] }
+$dest = Join-Path $env:USERPROFILE "$homeClient\skills\session-finder"
 $venv = Join-Path $dest '.venv'
 $fs = Join-Path $dest 'scripts\find_session.py'
+$skill = (Get-Content (Join-Path $here 'session-finder\SKILL.md') -Raw -Encoding utf8).Replace(
+    '.workbuddy/skills/session-finder', "$homeClient/skills/session-finder")
+$utf8 = New-Object System.Text.UTF8Encoding $false
 
 Write-Host "[1/4] Copying the skill to $dest"
 New-Item -ItemType Directory -Force -Path (Join-Path $dest 'scripts') | Out-Null
-Copy-Item (Join-Path $here 'session-finder\SKILL.md') $dest -Force
 Copy-Item (Join-Path $here 'session-finder\scripts\find_session.py') (Join-Path $dest 'scripts') -Force
+[IO.File]::WriteAllText((Join-Path $dest 'SKILL.md'), $skill, $utf8)
 
-# Claude Code, Codex and CodeBuddy get only SKILL.md; it points at the script and venv
-# above, so there is one copy to update. A client that isn't installed is skipped.
-foreach ($client in @('.claude', '.codex', '.codebuddy')) {
-    $root = Join-Path $env:USERPROFILE $client
-    if (-not (Test-Path $root)) { continue }
-    $sk = Join-Path $root 'skills\session-finder'
+foreach ($client in $present) {
+    if ($client -eq $homeClient) { continue }
+    $sk = Join-Path $env:USERPROFILE "$client\skills\session-finder"
     $extra = Get-ChildItem $sk -Force -ErrorAction SilentlyContinue | Where-Object Name -ne 'SKILL.md'
     if ($extra) {
         # An older standalone install (own scripts/.venv): move it aside, don't delete.
@@ -36,7 +46,7 @@ foreach ($client in @('.claude', '.codex', '.codebuddy')) {
         Write-Host "      moved the old $sk to $bak"
     }
     New-Item -ItemType Directory -Force -Path $sk | Out-Null
-    Copy-Item (Join-Path $here 'session-finder\SKILL.md') $sk -Force
+    [IO.File]::WriteAllText((Join-Path $sk 'SKILL.md'), $skill, $utf8)
     Write-Host "      SKILL.md -> $sk"
 }
 
