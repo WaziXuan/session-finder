@@ -2,6 +2,9 @@
 # syncs picks it up on its next run (the watcher within 10 minutes) and updates itself.
 # Bump VERSION in find_session.py first, or nothing updates.
 $ErrorActionPreference = 'Stop'
+# The script prints UTF-8; Windows PowerShell would read it in the ANSI code page and
+# garble non-ASCII paths (e.g. a OneDrive folder named in Chinese).
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $py = @('.workbuddy', '.claude', '.codex', '.codebuddy') |
     ForEach-Object { Join-Path $env:USERPROFILE "$_\skills\session-finder\.venv\Scripts\python.exe" } |

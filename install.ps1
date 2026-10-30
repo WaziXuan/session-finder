@@ -10,6 +10,9 @@ param(
     [string]$SyncRoot
 )
 $ErrorActionPreference = 'Stop'
+# The script prints UTF-8; Windows PowerShell would read it in the ANSI code page and
+# garble non-ASCII paths.
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
