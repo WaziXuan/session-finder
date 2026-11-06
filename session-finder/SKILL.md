@@ -122,6 +122,27 @@ once the session goes quiet. Finished Codex `.jsonl.zst` rollouts are copied who
 - Run `"$PY" "$S" sync` to push now. Log: `sync.log` in the state folder; per-file upload
   offsets: `sync_state.json` next to it (delete it to force a full re-push).
 
+## Redaction (optional, sync users only)
+
+A `<SessionSync>/_redact.json` makes every machine scrub secrets from what it writes to the
+sync folder — raw chunks, dialogue extracts, index titles. Local transcripts are not touched.
+
+```json
+{"tags": {"<first 8 hex of sha256(secret)>": "<name>"}, "patterns": true}
+```
+
+- `tags` holds hash prefixes only, never the secrets; a matching token becomes `<vault://name>`.
+  Compute a tag locally (`printf '%s' 'secret' | sha256sum | cut -c1-8`), never with an online tool.
+- `patterns: true` also blanks generic shapes: `user:password@` in URLs, `ss://` / `vmess://` /
+  `ssr://` credentials, private keys, JWTs, `ghp_` / `sk-` / `tskey-` style tokens.
+- When the file appears or changes, each machine rewrites its own already-pushed files in place
+  on its next sync (same names, so indexes and offsets stay valid). A machine that keeps no local
+  copy of its folder (rclone push) is done from elsewhere: `"$PY" "$S" redact-cloud --host <NAME>`.
+  `redact-cloud --all --dry-run` counts what is still left.
+- If the file exists but can't be read, or was applied before and is gone, sync refuses to push
+  rather than push unredacted (log line says so).
+- Copies already in the sync service's version history / recycle bin are not reached by this.
+
 ## Auto-update (sync users only)
 
 The installed script checks `<SessionSync>/_install/session-finder/scripts/find_session.py`

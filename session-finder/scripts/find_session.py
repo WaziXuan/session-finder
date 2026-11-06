@@ -49,7 +49,7 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.10.30.7"
+VERSION = "2026.11.6.1"
 # The installer puts the script into the first client that has it: ~/.workbuddy,
 # else ~/.claude, ~/.codex, ~/.codebuddy. The other clients get only SKILL.md.
 CLIENTS = (".workbuddy", ".claude", ".codex", ".codebuddy")
@@ -952,6 +952,126 @@ def tail_hash(f, off: int) -> str:
     return hashlib.sha1(f.read(off - start)).hexdigest()
 
 
+# Redaction. A <SessionSync>/_redact.json makes every machine scrub secrets out of what
+# it writes to the sync folder (raw chunks, dialogue extracts, index titles); local
+# transcripts are never touched.
+#   {"tags": {"<first 8 hex of sha256(secret)>": "<name>", ...}, "patterns": true}
+# Only hash prefixes are stored, never the secrets. A token whose hash prefix is listed
+# becomes <vault://name>; "patterns" also blanks generic credential shapes
+# (user:password@ in URLs, proxy links, private keys, JWTs, well-known token prefixes).
+REDACT_FILE = "_redact.json"
+REDACT_KEY = "__redact__"  # sync_state entry: signature of the _redact.json last applied
+# no plain comma here: secrets can contain one (a trailing comma is stripped by _TRIM)
+_SPLIT = re.compile(r"[\s`\"'，。；（）@:/=|\\<>\[\]{}()]+")
+_TRIM = re.compile(r"^[(（\[*]+|[)）\].,;*]+$")
+_SS_B64 = re.compile(r"\bss://([A-Za-z0-9+/=_-]{16,})(?=@)")
+_CRED_PATTERNS = [
+    # one JSONL record is one line, so never match across a newline
+    (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[^\n\"]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"), "<redacted:private-key>"),
+    (re.compile(r"\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}"), "<redacted:jwt>"),
+    (re.compile(r"\b(?:ghp_|gho_|github_pat_|sk-ant-|sk-proj-|sk_live_|rk_live_|tskey-|xox[bpa]-)[A-Za-z0-9_-]{12,}"), "<redacted:token>"),
+    (re.compile(r"\b((?:https?|socks5h?|socks4|ftp|ss|ssr|trojan|vless|hysteria2|hy2|tuic|anytls)://[^:@\s/`\"'<>\\]+:)[^@\s`\"'<>\\]+(?=@)"), r"\1<redacted>"),
+    (re.compile(r"\b(ss|vmess|ssr)://[A-Za-z0-9+/=_-]{16,}(?=@|[\s`\"'<>\\#]|$)"), r"\1://<redacted>"),
+]
+
+
+class Redactor:
+    def __init__(self, tags: dict, patterns: bool, sig: str):
+        self.tags = {str(k).lower()[:8]: str(v) for k, v in tags.items()}
+        self.patterns = patterns
+        self.sig = sig
+
+    def _name(self, s: str):
+        import hashlib
+        return self.tags.get(hashlib.sha256(s.encode("utf-8", "surrogateescape")).hexdigest()[:8])
+
+    def text(self, t: str) -> str:
+        if not t:
+            return t
+        if self.tags:
+            import base64
+            import urllib.parse
+            hits = {}
+            for m in _SS_B64.finditer(t):  # ss://base64(method:password)@host
+                b = m.group(1)
+                try:
+                    u = base64.b64decode(b.replace("-", "+").replace("_", "/") + "=" * (-len(b) % 4)).decode("utf-8")
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                n = ":" in u and self._name(u.split(":", 1)[1])
+                if n:
+                    hits[b] = n
+            for tok in set(_SPLIT.split(t)):
+                if not 8 <= len(tok) <= 200:
+                    continue
+                for c in {tok, _TRIM.sub("", tok)}:
+                    n = len(c) >= 8 and (self._name(c) or self._name(urllib.parse.unquote(c)))
+                    if n:
+                        hits[c] = n
+            for frag in sorted(hits, key=len, reverse=True):
+                t = t.replace(frag, f"<vault://{hits[frag]}>")
+        if self.patterns:
+            for rx, rep in _CRED_PATTERNS:
+                t = rx.sub(rep, t)
+        return t
+
+    def blob(self, data: bytes) -> bytes:
+        s = data.decode("utf-8", "surrogateescape")
+        r = self.text(s)
+        return data if r == s else r.encode("utf-8", "surrogateescape")
+
+
+def load_redactor(root: Path):
+    """The Redactor for this sync folder, or None if it has no _redact.json.
+    An unreadable file raises: pushing unredacted because of a half-synced config
+    would defeat the point."""
+    import hashlib
+    p = root / REDACT_FILE
+    if not p.exists():
+        return None
+    try:
+        raw = p.read_bytes()
+        cfg = json.loads(raw.decode("utf-8-sig"))
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"{REDACT_FILE} unreadable, nothing pushed: {e}")
+    r = Redactor(cfg.get("tags") or {}, bool(cfg.get("patterns")), hashlib.sha256(raw).hexdigest()[:16])
+    return r if (r.tags or r.patterns) else None
+
+
+def redact_folder(root: Path, host: str, red: Redactor, dry: bool = False) -> tuple[int, int]:
+    """Rewrite, in place and under the same names, every file already pushed for `host`
+    (raw chunks, whole Codex rollouts, dialogue extracts, indexes) that still holds
+    something `red` would redact. Names don't change, so indexes and upload offsets
+    stay valid. Returns (files read, files rewritten)."""
+    import zstandard as zstd
+    cz = zstd.ZstdCompressor(level=10)
+    seen = changed = 0
+    for base in (root / host, root / "_search" / host):
+        if not base.is_dir():
+            continue
+        for p in base.rglob("*"):
+            if not p.is_file() or p.name.endswith(".tmp"):
+                continue
+            try:
+                data = p.read_bytes()
+                if p.suffix == ".zst":
+                    plain = zstd.ZstdDecompressor().stream_reader(io.BytesIO(data)).read()
+                elif p.suffix in (".json", ".jsonl"):
+                    plain = data
+                else:
+                    continue
+            except (OSError, zstd.ZstdError) as e:
+                log_line(f"{HOST}: redact skip {p}: {e}")
+                continue
+            seen += 1
+            new = red.blob(plain)
+            if new != plain:
+                changed += 1
+                if not dry:
+                    write_atomic(p, cz.compress(new) if p.suffix == ".zst" else new)
+    return seen, changed
+
+
 WRITTEN: set = set()  # files written by the current sync pass, for rclone_push
 
 
@@ -1049,17 +1169,24 @@ def adopt_v1(old, p: Path, rel: str, base: Path) -> dict:
     return {"off": -1, "n": 1, "chunks": [full]}  # cut mid-line: re-push from scratch
 
 
-def push(p: Path, rel: str, base: Path, st, ent: dict, cz):
+def push(p: Path, rel: str, base: Path, st, ent: dict, cz, red=None):
     """Upload what is new in one session. Returns (raw bytes, packed bytes, files to delete).
 
     jsonl sessions only ever grow, so each push is the appended tail since the last
     offset, as its own <rel>.NNN.zst. A rewrite (shorter file, or changed bytes just
     before the offset) starts over; MAX_CHUNKS pieces are merged once the session idles.
+    Offsets always refer to the local file; `red` only changes what is written.
     """
     if p.suffix == ".zst":  # finished Codex rollout: copied whole when it changes
         if ent.get("chunks") and ent.get("m") == st.st_mtime and ent.get("s") == st.st_size:
             return 0, 0, []
         data = p.read_bytes()
+        if red:
+            import zstandard as zstd
+            plain = zstd.ZstdDecompressor().stream_reader(io.BytesIO(data)).read()
+            new = red.blob(plain)
+            if new != plain:
+                data = cz.compress(new)
         write_atomic(base / rel, data)
         ent.update(m=st.st_mtime, s=st.st_size, chunks=[rel])
         return len(data), len(data), []
@@ -1079,7 +1206,7 @@ def push(p: Path, rel: str, base: Path, st, ent: dict, cz):
         if start + cut <= off:
             ent["off"] = off
             return 0, 0, doomed
-        packed = cz.compress(data[:cut])
+        packed = cz.compress(red.blob(data[:cut]) if red else data[:cut])
         name = f"{rel}.{ent.get('n', 0):03d}.zst"  # n only grows, so names never collide
         ent["n"] = ent.get("n", 0) + 1
         write_atomic(base / name, packed)
@@ -1092,13 +1219,13 @@ def push(p: Path, rel: str, base: Path, st, ent: dict, cz):
     return cut, len(packed), doomed
 
 
-def push_text(src: Source, p: Path, sid: str, rel: str, base: Path, cz) -> str:
+def push_text(src: Source, p: Path, sid: str, rel: str, base: Path, cz, red=None) -> str:
     """Write the session's dialogue only (no tool calls/results) as <id>-<hash>.txt.zst,
     one {"t","r","x"} record per message. Other machines `grep` these instead of
     downloading the raw transcript, which is ~99% tool output. Flat short names:
     mirroring Codex's dated folders plus a double-UUID filename overflows MAX_PATH."""
     import hashlib
-    lines = [json.dumps({"t": ts, "r": role, "x": txt}, ensure_ascii=False)
+    lines = [json.dumps({"t": ts, "r": role, "x": red.text(txt) if red else txt}, ensure_ascii=False)
              for ts, role, txt in src.messages(p)]
     name = f"{sid}-{hashlib.sha1(rel.encode('utf-8')).hexdigest()[:6]}.txt.zst"
     write_atomic(base / name, cz.compress(("\n".join(lines) + "\n").encode("utf-8")))
@@ -1127,6 +1254,16 @@ def sync_once(only=None) -> tuple[int, str]:
     pushed = raw = packed = 0
     entries, doomed = [], []
     cz = zstd.ZstdCompressor(level=10)
+    red = load_redactor(root)  # raises if _redact.json exists but can't be read
+    if not red and state.get(REDACT_KEY):
+        raise RuntimeError(f"{REDACT_FILE} was applied before but is missing now, nothing pushed "
+                           f"(delete the {REDACT_KEY} entry in {SYNC_STATE} to really stop redacting)")
+    note_red = ""
+    if red and state.get(REDACT_KEY) != red.sig:
+        # New or changed rules: scrub what this machine pushed earlier, in place.
+        n_seen, n_changed = redact_folder(root, HOST, red)
+        state[REDACT_KEY] = red.sig
+        note_red = f"; redacted {n_changed}/{n_seen} earlier files"
     for r in local_rows(None):
         src = SOURCES[r["src"]]
         p = Path(r["path"])
@@ -1141,7 +1278,7 @@ def sync_once(only=None) -> tuple[int, str]:
             ent = adopt_v1(ent, p, rel, base)
         if only is None or r["path"] in only:
             try:
-                n_raw, n_packed, gone = push(p, rel, base, st, ent, cz)
+                n_raw, n_packed, gone = push(p, rel, base, st, ent, cz, red)
             except OSError as e:
                 log_line(f"{HOST}: skip {p}: {e}")
             else:
@@ -1152,7 +1289,7 @@ def sync_once(only=None) -> tuple[int, str]:
             stale = ent.get("text_sig") != [st.st_mtime, st.st_size] or not ent.get("text", "").startswith("_search/")
             if ent.get("chunks") and stale:
                 try:
-                    name = push_text(src, p, r["id"], rel, search / r["src"], cz)
+                    name = push_text(src, p, r["id"], rel, search / r["src"], cz, red)
                     if ent.get("text") and not ent["text"].startswith("_search/"):
                         doomed.append(base / ent["text"])  # pre-_search location
                     ent["text"] = f"_search/{HOST}/{r['src']}/{name}"
@@ -1174,6 +1311,11 @@ def sync_once(only=None) -> tuple[int, str]:
         old = []
     have = {(e["src"], e["id"]) for e in entries}
     entries += [e for e in old if (e.get("src"), e.get("id")) not in have]
+    if red:
+        for e in entries:
+            for k in ("title", "first_user", "cwd"):
+                if isinstance(e.get(k), str):
+                    e[k] = red.text(e[k])
     dest.mkdir(parents=True, exist_ok=True)
     body = json.dumps({"host": HOST, "format": 3, "updated": datetime.now().isoformat(timespec="seconds"),
                        "sessions": entries}, ensure_ascii=False).encode("utf-8")
@@ -1192,7 +1334,7 @@ def sync_once(only=None) -> tuple[int, str]:
     SYNC_STATE.write_text(json.dumps(state), encoding="utf-8")
     note = rclone_push(root, WRITTEN, doomed)
     msg = (f"{HOST}: {len(entries)} indexed, {pushed} pushed "
-           f"({raw/1e6:.2f} MB -> {packed/1e6:.2f} MB) in {time.time()-t0:.1f}s -> {dest}{note}")
+           f"({raw/1e6:.2f} MB -> {packed/1e6:.2f} MB) in {time.time()-t0:.1f}s -> {dest}{note}{note_red}")
     return pushed, msg
 
 
@@ -1248,6 +1390,43 @@ def cmd_sync(a) -> int:
     if not a.quiet:
         print(msg)
     return 0
+
+
+def cmd_redact_cloud(a) -> int:
+    """Apply _redact.json to what is already in the sync folder. This machine does its
+    own folder by itself on the next sync after the rules change; use this for a
+    machine that can't (e.g. one that pushes through rclone and keeps no local copy of
+    its folder), or to check with --dry-run."""
+    root = cloud_root()
+    if not root:
+        print(NO_SYNC)
+        return 1
+    try:
+        red = load_redactor(root)
+    except RuntimeError as e:
+        print(e)
+        return 1
+    if not red:
+        print(L(f"{root} 里没有 {REDACT_FILE}，没有可用的规则", f"no {REDACT_FILE} in {root}, nothing to apply"))
+        return 1
+    hosts = [d.name for d in root.iterdir() if d.is_dir() and not d.name.startswith("_")] if a.all else [(a.host or HOST).upper()]
+    rc = 0
+    for h in hosts:
+        lock = FileLock("sync.lock") if h == HOST else None
+        if lock and not lock.acquire(300):
+            print(f"{h}: " + L("同步正在进行，跳过", "a sync is running, skipped"))
+            rc = 1
+            continue
+        try:
+            seen, changed = redact_folder(root, h, red, dry=a.dry_run)
+        finally:
+            if lock:
+                lock.release()
+        verb = L("会改", "would rewrite") if a.dry_run else L("改了", "rewrote")
+        print(f"{h}: {L('读了', 'read')} {seen}, {verb} {changed}")
+        if not a.dry_run:
+            log_line(f"{HOST}: redact-cloud {h}: rewrote {changed}/{seen}")
+    return rc
 
 
 def session_sigs() -> dict:
@@ -1364,6 +1543,12 @@ def main() -> int:
     p.add_argument("path", nargs="?", help=L("同步文件夹，例如 OneDrive 下的 SessionSync", "the shared folder, e.g. SessionSync in OneDrive"))
     p.add_argument("--off", action="store_true", help=L("关闭同步", "turn sync off"))
     p.set_defaults(fn=cmd_sync_root)
+
+    p = sub.add_parser("redact-cloud", help=L("按同步文件夹里的 _redact.json 把已推送的副本就地脱敏", "apply the sync folder's _redact.json to copies already pushed"))
+    p.add_argument("--host", default=None, help=L("哪台机器的文件夹（默认本机）", "whose folder (default: this machine)"))
+    p.add_argument("--all", action="store_true", help=L("所有机器的文件夹", "every machine's folder"))
+    p.add_argument("--dry-run", action="store_true", help=L("只统计，不改", "count only, change nothing"))
+    p.set_defaults(fn=cmd_redact_cloud)
 
     p = sub.add_parser("watch", help=L("常驻：会话一有变化（停写 1 分钟或最多 5 分钟）就增量推送", "stay running; push a session 1 min after it stops changing (5 min at most)"))
     p.add_argument("--interval", type=int, default=15, help=L("扫描间隔秒数", "seconds between scans"))
