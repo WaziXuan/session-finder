@@ -121,6 +121,36 @@ On macOS there is no service: run `find_session.py watch` at login yourself (lau
 **Privacy:** synced transcripts contain everything you and your agents said, including
 command output. Only point this at storage you trust.
 
+### Optional: keep secrets out of the synced copies
+
+If a password or API key ever showed up in a session (you pasted it, or an agent printed
+a config file), the synced copy has it too. You can have every machine scrub those
+before they leave it. Your local transcripts are never changed — only what goes into the
+sync folder.
+
+Add each secret once, from any machine. It is read without echo; only the first 8 hex
+digits of its SHA-256 are stored, never the secret:
+
+```bash
+python find_session.py redact-add vps-root-password     # asks for the value twice
+```
+
+That creates `<SessionSync>/_redact.json` (see `_redact.example.json`). From then on:
+
+- every push has that value replaced with `<vault://vps-root-password>`;
+- generic shapes are blanked too (`"patterns": true`): `user:password@` in URLs,
+  `ss://` / `vmess://` credentials, private keys, JWTs, `ghp_…` / `sk-…` / `tskey-…` tokens;
+- on its next sync, each machine rewrites what it pushed **earlier** in place, so old
+  copies get cleaned as well;
+- a machine that keeps no local copy of its own folder (the rclone setup above) is
+  cleaned from another one with `find_session.py redact-cloud --host <NAME>`;
+  `redact-cloud --all --dry-run` shows how many files still need it.
+
+If `_redact.json` can't be read (half-synced, broken JSON), or it was used before and
+then disappeared, sync stops pushing instead of pushing unredacted. It can't reach
+copies already in your sync service's version history or recycle bin; delete those there.
+Values shorter than 8 characters aren't accepted (they would match ordinary words).
+
 Turn it off with `find_session.py sync-root --off` and remove the scheduled task / service.
 
 **Auto-update between your machines:** after `git pull` on one machine, bump `VERSION`

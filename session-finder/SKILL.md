@@ -132,7 +132,9 @@ sync folder — raw chunks, dialogue extracts, index titles. Local transcripts a
 ```
 
 - `tags` holds hash prefixes only, never the secrets; a matching token becomes `<vault://name>`.
-  Compute a tag locally (`printf '%s' 'secret' | sha256sum | cut -c1-8`), never with an online tool.
+  Add one with `"$PY" "$S" redact-add <name>` — the **user** types the value (no echo); never
+  ask them to paste it into the chat, and never compute a tag with an online tool.
+  Values under 8 characters are refused. `_redact.example.json` in the repo shows the format.
 - `patterns: true` also blanks generic shapes: `user:password@` in URLs, `ss://` / `vmess://` /
   `ssr://` credentials, private keys, JWTs, `ghp_` / `sk-` / `tskey-` style tokens.
 - When the file appears or changes, each machine rewrites its own already-pushed files in place

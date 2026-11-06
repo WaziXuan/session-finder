@@ -49,7 +49,7 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.11.6.1"
+VERSION = "2026.11.6.2"
 # The installer puts the script into the first client that has it: ~/.workbuddy,
 # else ~/.claude, ~/.codex, ~/.codebuddy. The other clients get only SKILL.md.
 CLIENTS = (".workbuddy", ".claude", ".codex", ".codebuddy")
@@ -1429,6 +1429,48 @@ def cmd_redact_cloud(a) -> int:
     return rc
 
 
+def cmd_redact_add(a) -> int:
+    """Add one secret to _redact.json without it ever being shown or saved: it is read
+    without echo, and only the first 8 hex digits of its SHA-256 are written."""
+    import getpass
+    import hashlib
+    root = cloud_root()
+    if not root:
+        print(NO_SYNC)
+        return 1
+    if not re.fullmatch(r"[\w.-]+", a.name):
+        print(L("名字只能用字母、数字、_ . -", "the name may only use letters, digits, _ . -"))
+        return 1
+    if a.stdin:  # for scripts: one line from stdin, nothing echoed
+        secret = sys.stdin.readline().rstrip("\r\n")
+    else:
+        secret = getpass.getpass(L(f"输入 {a.name} 的值（不显示）: ", f"value of {a.name} (not shown): "))
+        if getpass.getpass(L("再输一次: ", "again: ")) != secret:
+            print(L("两次不一样，什么都没改", "the two entries differ, nothing changed"))
+            return 1
+    if len(secret) < 8:
+        print(L("少于 8 个字符的值不会被匹配（太容易误伤普通文字），没有添加",
+                "values shorter than 8 characters are never matched (too many false hits), not added"))
+        return 1
+    tag = hashlib.sha256(secret.encode("utf-8")).hexdigest()[:8]
+    secret = None
+    p = root / REDACT_FILE
+    try:
+        cfg = json.loads(p.read_text(encoding="utf-8-sig")) if p.exists() else {"tags": {}, "patterns": True}
+    except (OSError, ValueError) as e:
+        print(L(f"{p} 读不了，没有改：{e}", f"can't read {p}, nothing changed: {e}"))
+        return 1
+    tags = cfg.setdefault("tags", {})
+    old = tags.get(tag)
+    tags[tag] = a.name
+    write_atomic(p, (json.dumps(cfg, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    if old and old != a.name:
+        print(L(f"这个值原来叫 {old}，现在改名为 {a.name}", f"this value was listed as {old}, renamed to {a.name}"))
+    print(L(f"已加入 {p}：{a.name}（哈希前缀 {tag}）。各机器下次同步时会重扫自己已推送的文件。",
+            f"added to {p}: {a.name} (hash prefix {tag}). Each machine rescans what it already pushed on its next sync."))
+    return 0
+
+
 def session_sigs() -> dict:
     sigs = {}
     for src in SOURCES.values():
@@ -1543,6 +1585,11 @@ def main() -> int:
     p.add_argument("path", nargs="?", help=L("同步文件夹，例如 OneDrive 下的 SessionSync", "the shared folder, e.g. SessionSync in OneDrive"))
     p.add_argument("--off", action="store_true", help=L("关闭同步", "turn sync off"))
     p.set_defaults(fn=cmd_sync_root)
+
+    p = sub.add_parser("redact-add", help=L("把一个密钥加入脱敏名单（输入时不显示，只存哈希前缀）", "add a secret to the redaction list (typed without echo, only a hash prefix is stored)"))
+    p.add_argument("name", help=L("替换后显示的名字，例如 vps-root-password", "what it is replaced with, e.g. vps-root-password"))
+    p.add_argument("--stdin", action="store_true", help=L("从标准输入读一行（给脚本用）", "read one line from stdin (for scripts)"))
+    p.set_defaults(fn=cmd_redact_add)
 
     p = sub.add_parser("redact-cloud", help=L("按同步文件夹里的 _redact.json 把已推送的副本就地脱敏", "apply the sync folder's _redact.json to copies already pushed"))
     p.add_argument("--host", default=None, help=L("哪台机器的文件夹（默认本机）", "whose folder (default: this machine)"))

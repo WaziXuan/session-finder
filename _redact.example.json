@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy to <SessionSync>/_redact.json, or let `find_session.py redact-add <name>` create it. tags: first 8 hex digits of sha256(secret) -> the name it is replaced with. Never put the secret itself here. The two keys below are placeholders that match nothing; replace them. patterns: also blank generic credential shapes.",
+  "tags": {
+    "PUT-HASH": "example-password",
+    "PUT-HAS2": "example-api-key"
+  },
+  "patterns": true
+}

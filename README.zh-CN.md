@@ -97,6 +97,25 @@ macOS 没有自带服务：需要自己用 launchd 在登录时跑 `find_session
 
 **隐私：** 同步出去的记录包含你和 agent 说过的一切，包括命令输出。只放在你信得过的存储里。
 
+### 可选：不让密码出现在同步出去的副本里
+
+只要某个密码或 API key 在会话里出现过（你自己贴过，或者 agent 打印过某个配置文件），同步出去的副本里就有它。可以让每台电脑在推送之前先把它们换掉。本机的会话记录不会被改，只改放进同步文件夹的那份。
+
+在任意一台电脑上，每个密钥加一次。输入时不显示；只保存它 SHA-256 的前 8 位，不保存密钥本身：
+
+```bash
+python find_session.py redact-add vps-root-password     # 会让你输两次
+```
+
+这会生成 `<SessionSync>/_redact.json`（格式见 `_redact.example.json`）。之后：
+
+- 每次推送都会把这个值换成 `<vault://vps-root-password>`；
+- 常见的密钥写法也会一起遮掉（`"patterns": true`）：链接里的 `用户:密码@`、`ss://` / `vmess://` 里的凭据、私钥、JWT、`ghp_…` / `sk-…` / `tskey-…` 这类 token；
+- 每台电脑下次同步时，会把自己**以前**推上去的文件就地改写一遍，旧副本也会被清理；
+- 自己文件夹不在本机的电脑（上面那种 rclone 方式），在别的电脑上跑 `find_session.py redact-cloud --host <电脑名>` 清理；`redact-cloud --all --dry-run` 可以看还剩多少文件没清。
+
+如果 `_redact.json` 读不了（没同步完、JSON 写坏了），或者以前用过、后来不见了，同步会停下来，不会把没脱敏的内容推上去。同步服务的版本历史和回收站里的旧副本它碰不到，要去那边删。少于 8 个字符的值不接受（太容易误伤普通文字）。
+
 关闭：`find_session.py sync-root --off`，再删掉计划任务或服务。
 
 **多台电脑之间自动更新：** 在一台电脑上 `git pull`（自己改了代码的话先调大
