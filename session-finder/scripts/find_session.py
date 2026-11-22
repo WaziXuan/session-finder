@@ -49,7 +49,9 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.11.6.2"
+VERSION = "2026.11.22.1"
+# Bump when scan() returns new fields, so cached metadata is rebuilt once.
+META_V = 3
 # The installer puts the script into the first client that has it: ~/.workbuddy,
 # else ~/.claude, ~/.codex, ~/.codebuddy. The other clients get only SKILL.md.
 CLIENTS = (".workbuddy", ".claude", ".codex", ".codebuddy")
@@ -144,6 +146,8 @@ ENVELOPES = (
     "<tool-result", "<previous-conversation", "<environment_context",
     "<permissions", "<collaboration", "<world_state",
     "# agents.md instructions", "# claude.md",
+    # Codex side conversation: the first "user" record is the host's boundary notice.
+    "side conversation boundary.",
 )
 
 
@@ -221,6 +225,23 @@ def stamp(ts) -> str:
         return "--"
 
 
+def subagent_of(path: Path) -> dict:
+    """Claude Code (and WorkBuddy-style clients) keep a sub-agent's transcript at
+    <project>/<parentId>/subagents/agent-<id>.jsonl, with <same>.meta.json next to it."""
+    if path.parent.name != "subagents":
+        return {}
+    info = {"parent": path.parent.parent.name, "agent": "subagent"}
+    meta = path.with_name(path.name.split(".jsonl")[0] + ".meta.json")
+    try:
+        m = json.loads(meta.read_text(encoding="utf-8"))
+        info["agent"] = m.get("agentType") or info["agent"]
+        if m.get("description"):
+            info["title"] = m["description"]
+    except (OSError, ValueError):
+        pass
+    return info
+
+
 def guess_cwd_from_dirname(name: str) -> str:
     """Best-effort fallback when a record has no cwd. Lossy: 'D--Sandbox' -> 'D:\\Sandbox'."""
     m = re.match(r"^([A-Za-z])--(.*)$", name)
@@ -282,8 +303,9 @@ class WB(Source):
                     first = t
             if first and cwd and title:
                 break
-        return {"title": title or "", "cwd": cwd or path.parent.name,
-                "first_user": first or ""}
+        sub = subagent_of(path)
+        return {"title": title or sub.pop("title", ""), "cwd": cwd or path.parent.name,
+                "first_user": first or "", **sub}
 
     def messages(self, path):
         for line in open_lines(path):
@@ -309,8 +331,12 @@ class Codex(Source):
     _titles = None
 
     def sessions(self):
-        d = self.root / "sessions"
-        return sorted(d.rglob("rollout-*.jsonl*")) if d.exists() else []
+        # Archived threads move to archived_sessions/; keep them searchable too.
+        out = []
+        for d in (self.root / "sessions", self.root / "archived_sessions"):
+            if d.exists():
+                out += d.rglob("rollout-*.jsonl*")
+        return sorted(out)
 
     def sid(self, path):
         stem = path.name.replace(".jsonl.zst", "").replace(".jsonl", "")
@@ -334,8 +360,33 @@ class Codex(Source):
     def scan(self, path):
         title = self.titles().get(self.sid(path))
         cwd = first = None
+        sub = {}
         try:
             for i, line in enumerate(open_lines(path)):
+                if i == 0 and '"session_meta"' in line:
+                    # A sub-agent rollout (guardian review, spawned agent...) names its
+                    # parent thread in the first record.
+                    try:
+                        p = (json.loads(line).get("payload") or {})
+                    except ValueError:
+                        p = {}
+                    s = p.get("source")
+                    if isinstance(s, dict) and "subagent" in s:
+                        kind = s["subagent"]
+                        if isinstance(kind, dict):
+                            parent = p.get("parent_thread_id") or next(
+                                (v.get("parent_thread_id") for v in kind.values()
+                                 if isinstance(v, dict) and v.get("parent_thread_id")), None)
+                            kind = kind.get("other") or next(iter(kind), "subagent")
+                        else:
+                            parent = p.get("parent_thread_id")
+                        sub = {"parent": parent or "?", "agent": str(kind or "subagent")}
+                    elif p.get("parent_thread_id"):
+                        sub = {"parent": p["parent_thread_id"], "agent": p.get("thread_source") or "subagent"}
+                    elif p.get("forked_from_id"):
+                        sub = {"parent": p["forked_from_id"], "agent": "fork"}
+                if sub.get("agent") == "fork" and "Side conversation boundary" in line:
+                    sub["agent"] = "side"  # a side chat opened next to the parent thread
                 if '"cwd"' in line and not cwd:
                     try:
                         o = json.loads(line)
@@ -361,7 +412,7 @@ class Codex(Source):
                     break
         except RuntimeError as e:
             return {"title": "", "cwd": "", "first_user": str(e)}
-        return {"title": title or "", "cwd": cwd or "", "first_user": first or ""}
+        return {"title": title or "", "cwd": cwd or "", "first_user": first or "", **sub}
 
     def messages(self, path):
         for line in open_lines(path):
@@ -433,10 +484,13 @@ class Claude(Source):
                     first = txt
             if first and cwd and title:
                 break
+        sub = subagent_of(path)
         return {
-            "title": title or summary or (last_prompt or "")[:60],
-            "cwd": cwd or guess_cwd_from_dirname(path.parent.name),
+            "title": title or sub.pop("title", "") or summary or (last_prompt or "")[:60],
+            "cwd": cwd or guess_cwd_from_dirname(
+                path.parents[2].name if sub else path.parent.name),
             "first_user": first or "",
+            **sub,
         }
 
     def messages(self, path):
@@ -506,20 +560,25 @@ def local_rows(only=None) -> list[dict]:
                 continue
             key = str(p)
             hit = cache.get(key)
-            if hit and hit.get("m") == st.st_mtime and hit.get("s") == st.st_size:
+            if (hit and hit.get("m") == st.st_mtime and hit.get("s") == st.st_size
+                    and hit.get("v") == META_V):
                 meta = hit
             else:
                 try:
                     meta = src.scan(p)
                 except RuntimeError as e:
                     meta = {"title": "(unreadable)", "cwd": "", "first_user": str(e)}
-                meta = {**meta, "m": st.st_mtime, "s": st.st_size}
+                meta = {**meta, "m": st.st_mtime, "s": st.st_size, "v": META_V}
                 cache[key] = meta
             real_title = meta.get("title") or ""
             first = meta.get("first_user") or ""
-            if any(first.startswith(m) for m in MACHINE_PROMPTS):
-                continue
+            parent, agent = meta.get("parent") or "", meta.get("agent") or ""
+            if not parent and any(first.startswith(m) for m in MACHINE_PROMPTS):
+                parent, agent = "?", "guardian"  # older rollouts without a parent id
+            if agent and real_title and not real_title.startswith("["):
+                real_title = f"[{agent}] {real_title}"
             rows.append({
+                "parent": parent, "agent": agent,
                 "src": src.key, "host": "", "id": src.sid(p), "path": str(p),
                 "title": real_title or (first.splitlines()[0][:50] if first else "(untitled)"),
                 "has_title": bool(real_title),
@@ -561,7 +620,12 @@ def cloud_rows(only=None, host=None) -> list[dict]:
             chunks = [str(d / r["src"] / c) for c in (r.get("chunks") or [r["cloud_rel"]])]
             t = r.get("text") or ""
             text = str(root / t) if t.startswith("_search/") else str(d / r["src"] / t) if t else ""
-            rows.append({**r, "host": d.name, "path": chunks[0], "chunks": chunks, "text": text})
+            extra = {}
+            if not r.get("parent") and "/subagents/" in "/" + str(r.get("cloud_rel", "")):
+                # pushed by a version that did not record the parent yet
+                parts = str(r["cloud_rel"]).split("/")
+                extra = {"parent": parts[parts.index("subagents") - 1], "agent": r.get("agent") or "subagent"}
+            rows.append({**r, **extra, "host": d.name, "path": chunks[0], "chunks": chunks, "text": text})
     return rows
 
 
@@ -579,15 +643,63 @@ def index(only=None, host="all") -> list[dict]:
 def tag_of(r: dict, full_id: bool = False) -> str:
     src = f"{r['src']}@{r['host']}" if r.get("host") else r["src"]
     # CodeBuddy ids are UUIDv7: the first 12 hex digits are a timestamp, so 8 collide.
-    return f"{src}|{r['id'] if full_id else r['id'][:13 if r['src'] == 'cb' else 8]}"
+    # Claude sub-agent ids all start with "agent-a", so 8 characters would collide.
+    # Codex sub-agent rollouts share the parent's first 8 characters.
+    n = (14 if r["id"].startswith("agent-") else
+         13 if r["src"] == "cb" or (r["src"] == "cx" and is_sub(r)) else 8)
+    return f"{src}|{r['id'] if full_id else r['id'][:n]}"
 
 
-def fmt(rows: list[dict], full_id: bool = False) -> str:
+# Linked to a parent but still the user's own conversation: listed normally.
+OWN_KINDS = ("side", "fork")
+
+
+def is_sub(r: dict) -> bool:
+    """A sub-agent run: hidden unless --subagents, listed under its parent."""
+    return bool(r.get("parent")) and r.get("agent") not in OWN_KINDS
+
+
+def link_note(r: dict) -> str:
+    k = r.get("agent")
+    what = (L("侧旁对话，主会话", "side chat of") if k == "side" else
+            L("分叉自", "forked from") if k == "fork" else L("子代理，主会话", "sub-agent of"))
+    return f"↳ {what} {parent_tag(r)}"
+
+
+def children_of(rows: list[dict]) -> dict:
+    """(src, host, parent id) -> sub-agent rows, newest first."""
+    kids: dict = {}
+    for r in rows:
+        if r.get("parent"):
+            kids.setdefault((r["src"], r.get("host") or "", r["parent"]), []).append(r)
+    return kids
+
+
+def kids_for(kids: dict, r: dict) -> list:
+    return kids.get((r["src"], r.get("host") or "", r["id"]), [])
+
+
+def parent_tag(r: dict) -> str:
+    p = r.get("parent") or ""
+    if p in ("", "?"):
+        return L("（主会话未知）", "(parent unknown)")
+    return tag_of({**r, "id": p})
+
+
+def fmt(rows: list[dict], full_id: bool = False, kids: dict | None = None) -> str:
     out = []
     w = max([12] + [len(tag_of(r, full_id)) for r in rows])
     for r in rows:
         tag = tag_of(r, full_id)
         out.append(f"{tag:<{w}} {r['mtime']}  {r['bytes']//1024:>5}KB  {r['title']}")
+        if r.get("parent"):
+            out.append(f"{'':{w}} {'':16}  {'':>7}  {link_note(r)}")
+        if kids and kids_for(kids, r):
+            ks = kids_for(kids, r)
+            n_side = sum(k.get("agent") in OWN_KINDS for k in ks)
+            parts = ([L(f"{n_side} 个侧旁对话/分叉", f"{n_side} side chat(s)/fork(s)")] if n_side else []) + \
+                    ([L(f"{len(ks) - n_side} 个子代理", f"{len(ks) - n_side} sub-agent(s)")] if len(ks) > n_side else [])
+            out.append(f"{'':{w}} {'':16}  {'':>7}  + {', '.join(parts)}{L('（show 末尾列出）', ' (listed at the end of show)')}")
         if r["cwd"]:
             out.append(f"{'':{w}} {'':16}  {'':>7}  cwd={r['cwd']}")
         if r["first_user"]:
@@ -611,13 +723,25 @@ def resolve(ref: str, host: str = "all"):
     if not hits:
         print(L(f"没有匹配的会话：{ref}", f"no session matched: {ref}"))
         return None
+    if len(hits) > 1 and len({(h["src"], h.get("host"), h["id"]) for h in hits}) == 1:
+        print(L(f"（同一个 id 有 {len(hits)} 份副本，读最新的那份）", f"({len(hits)} copies of this id, reading the newest)"))
+        hits = hits[:1]
+    if len(hits) > 1:
+        # A short prefix shared by a session and its sub-agents means the session.
+        own = [h for h in hits if not is_sub(h)]
+        if len(own) == 1:
+            hits = own
     if len(hits) > 1:
         print(L(f"前缀不唯一，有 {len(hits)} 个候选（用更长的前缀）：\n", f"ambiguous prefix, {len(hits)} candidates:\n"))
         print(fmt(hits[:10]))
         return None
     r = hits[0]
     chunks = [Path(c) for c in r.get("chunks") or [r["path"]]]
+    LAST_RESOLVED[:] = [r]
     return SOURCES[r["src"]], chunks if len(chunks) > 1 else chunks[0], r.get("host") or HOST
+
+
+LAST_RESOLVED: list = []  # the row resolve() picked, for show's sub-agent footer
 
 
 def chunk_label(path) -> str:
@@ -628,8 +752,16 @@ def chunk_label(path) -> str:
 
 def cmd_list(a) -> int:
     rows = index(norm_source(a.source), a.host)
-    print(L(f"# {len(rows)} 个会话（source={a.source}, host={a.host}）\n", f"# {len(rows)} sessions (source={a.source}, host={a.host})\n"))
-    print(fmt(rows[: a.limit]))
+    kids = children_of(rows)
+    n_sub = sum(map(is_sub, rows))
+    if not a.subagents:
+        rows = [r for r in rows if not is_sub(r)]
+    print(L(f"# {len(rows)} 个会话（source={a.source}, host={a.host}）", f"# {len(rows)} sessions (source={a.source}, host={a.host})"))
+    if n_sub and not a.subagents:
+        print(L(f"#（另有 {n_sub} 个子代理会话没列出，加 --subagents 显示）",
+                f"# ({n_sub} sub-agent sessions hidden, --subagents shows them)"))
+    print()
+    print(fmt(rows[: a.limit], kids=kids))
     return 0
 
 
@@ -638,7 +770,11 @@ def cmd_find(a) -> int:
     phrases = [a_.strip().lower() for a_ in a.keywords if " " in a_.strip()]
     words = [w.lower() for a_ in a.keywords for w in a_.split() if w.strip()]
     scored = []
-    for r in index(norm_source(a.source), a.host):
+    all_rows = index(norm_source(a.source), a.host)
+    kids = children_of(all_rows)
+    for r in all_rows:
+        if is_sub(r) and not a.subagents:
+            continue
         title = r["title"].lower() if r.get("has_title") else ""
         blob = title + "\n" + r["first_user"].lower()
         score = 0
@@ -657,7 +793,7 @@ def cmd_find(a) -> int:
         return 1
     scored.sort(key=lambda x: (-x[0], x[1]["mtime"]))
     print(L(f"# {len(scored)} 个匹配，最相关的在前\n", f"# {len(scored)} match(es), best first\n"))
-    print(fmt([r for _, r in scored[: a.limit]]))
+    print(fmt([r for _, r in scored[: a.limit]], kids=kids))
     return 0
 
 
@@ -697,6 +833,8 @@ def cmd_grep(a) -> int:
     contain every keyword (anywhere in it); messages hitting any keyword are shown."""
     words = [w.lower() for w in a.keywords]
     rows = index(norm_source(a.source), a.host)
+    if not a.subagents:
+        rows = [r for r in rows if not is_sub(r)]
     hits, no_text = [], 0
     for r in rows:
         if r.get("host") and not r.get("text") and not a.deep:
@@ -727,6 +865,8 @@ def cmd_grep(a) -> int:
             f"# {len(hits)} session(s) mention {' + '.join(a.keywords)}, most hits first\n"))
     for r, found in hits[: a.limit]:
         print(f"{tag_of(r)}  {r['mtime']}  {r['title']}  ({len(found)} {L('处命中', 'hits')})")
+        if r.get("parent"):
+            print(f"    {link_note(r)}")
         best = sorted(found, key=lambda f: -f[0])[: a.per]
         for _, ts, role, txt in best:
             print(f"    [{stamp(ts)}] {role:9s} {snippet(txt, words, a.context)}")
@@ -741,7 +881,11 @@ def cmd_show(a) -> int:
     if not got:
         return 1
     src, path, host = got
-    print(f"# {src.label} @ {host} · {chunk_label(path)}\n")
+    me = LAST_RESOLVED[0] if LAST_RESOLVED else {}
+    print(f"# {src.label} @ {host} · {chunk_label(path)}")
+    if me.get("parent"):
+        print(f"# [{me.get('agent')}] {link_note(me)}")
+    print()
     pat = re.compile(a.grep, re.IGNORECASE) if a.grep else None
 
     def emit(ts, role, txt):
@@ -774,6 +918,18 @@ def cmd_show(a) -> int:
                 f"… {shown - len(tail)} earlier messages skipped, showing the last {len(tail)} (--tail)"))
     for m in tail or ():
         emit(*m)
+    if me:
+        h = me.get("host") or "local"
+        kids = [r for r in index(me["src"], h)
+                if r.get("parent") == me["id"] and (r.get("host") or "") == (me.get("host") or "")]
+        kids.sort(key=lambda r: r.get("agent") not in OWN_KINDS)  # side chats first, stable by time
+        if kids:
+            print(L(f"\n# 挂在这个会话下的 {len(kids)} 个子代理/侧旁对话（show <标签> 读取）：",
+                    f"\n# {len(kids)} sub-agent(s)/side chat(s) of this session (show <tag> to read):"))
+            for r in kids[:30]:
+                print(f"  {tag_of(r)}  {r['mtime']}  {r['title']}")
+            if len(kids) > 30:
+                print(f"  … +{len(kids) - 30}")
     if not shown:
         print(L("（没有符合条件的消息）", "(no message matched the filter)"))
         return 1
@@ -1301,6 +1457,7 @@ def sync_once(only=None) -> tuple[int, str]:
             entries.append({
                 "src": r["src"], "id": r["id"], "cloud_rel": ent["chunks"][0], "chunks": ent["chunks"],
                 **({"text": ent["text"]} if ent.get("text") else {}),
+                **({"parent": r["parent"], "agent": r["agent"]} if r.get("parent") else {}),
                 "title": r["title"], "has_title": r["has_title"], "cwd": r["cwd"],
                 "first_user": r["first_user"][:500], "bytes": st.st_size, "mtime": r["mtime"],
             })
@@ -1540,6 +1697,7 @@ def main() -> int:
     p.add_argument("--source", default="all", help="all|wb|cx|cl|cb")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>（同步来的其他机器）", "all|local|<computer name> (other machines, synced)"))
     p.add_argument("--limit", type=int, default=15)
+    p.add_argument("--subagents", action="store_true", help=L("把子代理会话也列出来/一起搜（默认隐藏，挂在主会话下）", "include sub-agent sessions (hidden by default, linked to their parent)"))
     p.set_defaults(fn=cmd_list)
 
     p = sub.add_parser("find", help=L("按标题/首问关键词搜索", "search titles and first prompts"))
@@ -1547,6 +1705,7 @@ def main() -> int:
     p.add_argument("--source", default="all", help="all|wb|cx|cl|cb")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>（同步来的其他机器）", "all|local|<computer name> (other machines, synced)"))
     p.add_argument("--limit", type=int, default=8)
+    p.add_argument("--subagents", action="store_true", help=L("把子代理会话也列出来/一起搜（默认隐藏，挂在主会话下）", "include sub-agent sessions (hidden by default, linked to their parent)"))
     p.set_defaults(fn=cmd_find)
 
     p = sub.add_parser("grep", help=L("按对话内容全文搜索（标题不记得时用）；所有关键词都要在同一会话中出现", "full-text search of what was said; every word must occur in the same session"))
@@ -1559,6 +1718,7 @@ def main() -> int:
     p.add_argument("--context", type=int, default=80, help=L("命中前后各显示多少字", "characters of context around each hit"))
     p.add_argument("--deep", action="store_true",
                    help=L("连工具调用/输出一起搜（读原始记录；云端会话会被整份下载）", "also search tool calls and output (reads raw transcripts; synced ones get downloaded)"))
+    p.add_argument("--subagents", action="store_true", help=L("把子代理会话也列出来/一起搜（默认隐藏，挂在主会话下）", "include sub-agent sessions (hidden by default, linked to their parent)"))
     p.set_defaults(fn=cmd_grep)
 
     p = sub.add_parser("show", help=L("读取某个会话（默认只给人类说的话，截断输出）", "read a session (what the human said by default, truncated)"))

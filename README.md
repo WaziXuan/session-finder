@@ -162,8 +162,11 @@ from `<SessionSync>/_install` within 10 minutes.
 - Sessions are read-only. The script writes only its cache/log/state folder
   (`%LOCALAPPDATA%\session-finder\` or `~/.cache/session-finder/`) and, with sync on,
   `<SessionSync>/<this machine>/`.
-- Codex's own approval-review rollouts ("Guardian review") are skipped, otherwise they
-  drown every search. Injected prompts (WorkBuddy's `<user_info>`, Codex's
+- Sub-agent transcripts (Claude Code `subagents/`, Codex "Guardian review" and spawned
+  agents) are indexed and synced but hidden from `list` / `find` / `grep` unless
+  `--subagents`, otherwise they drown every search; each is linked to its parent session,
+  and `show <parent>` lists them. Codex side chats are listed normally as `[side]`.
+  Claude Code's `/btw` questions are never saved by Claude Code itself. Injected prompts (WorkBuddy's `<user_info>`, Codex's
   `AGENTS.md instructions`, Claude Code tool results) are filtered out of "what you said".
 - Codex's `session_index.jsonl` names only about half the sessions; the rest are titled
   by their first prompt.

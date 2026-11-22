@@ -126,7 +126,7 @@ python find_session.py redact-add vps-root-password     # 会让你输两次
 
 - 会话文件只读。脚本只写自己的缓存/日志/状态目录（`%LOCALAPPDATA%\session-finder\` 或
   `~/.cache/session-finder/`），开了同步时再加 `<SessionSync>/<本机名>/`。
-- Codex 自己的审批复查代理会写大量「Guardian review」会话，已跳过，否则会淹没所有搜索结果。
+- 子代理的记录（Claude Code 的 `subagents/`、Codex 的「Guardian review」和派生代理）都会索引和同步，但 `list` / `find` / `grep` 默认隐藏（加 `--subagents` 才显示），否则会淹没所有搜索结果；每条都挂在主会话下，`show <主会话>` 末尾会列出来。Codex 的侧旁对话照常列出，标 `[side]`。Claude Code 的 `/btw` 侧问本身不落盘，找不到。
   注入的提示词（WorkBuddy 的 `<user_info>`、Codex 的 `AGENTS.md instructions`、Claude Code
   的工具结果）不算作「你说的话」。
 - Codex 的 `session_index.jsonl` 只给约一半会话起了名字，其余用首问当标题。

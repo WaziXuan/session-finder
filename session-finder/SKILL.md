@@ -52,7 +52,17 @@ Without `zstandard` every `.zst` session reports
 "$PY" "$S" show "cl|11c4d28c" --role all --tail 15 --max-chars 1500   # the last 15 messages: where it ended
 "$PY" "$S" files "cl|e04d7a2d"         # files the session touched, most-mentioned first
 "$PY" "$S" sync-root                   # where multi-machine sync goes (exit 1 = off, this machine only)
+"$PY" "$S" list --subagents            # also list sub-agent runs (hidden by default); same flag on find / grep
 ```
+
+**Side chats and sub-agents.** Every transcript the clients write is indexed and synced,
+linked to the session it belongs to:
+- Codex side chats (opened next to a thread) and forks are listed like any session, tagged
+  `[side]` / `[fork]` with a `↳ side chat of cx|…` line.
+- Sub-agent runs (Claude Code `subagents/agent-*.jsonl`, Codex Guardian reviews and spawned
+  agents) are hidden from `list` / `find` / `grep` unless `--subagents`; the parent row says
+  `+ N sub-agent(s)`, and `show <parent>` lists their tags at the end.
+- Claude Code's `/btw` side questions are never written to disk, so they cannot be found.
 
 **Which one**: remember the title or the first question → `find`; remember only
 something that was discussed → `grep` (sessions ranked by hit count, each hit with
@@ -96,8 +106,8 @@ Off by default. When `sync-root` prints a folder (set by the installer's `-Sync`
 Linux: systemd --user `session-finder-sync`). The watcher scans every 15 s and pushes a
 session once it has been quiet for 60 s, or every 5 min while it keeps changing, plus a
 full pass every 30 min. Target: `<SessionSync>/<COMPUTERNAME>/{wb,cx,cl,cb}/…` plus an
-`_index.json` (titles, first prompts, mtimes, chunk lists). Codex Guardian-review
-rollouts are not pushed. Deleting a session locally does not remove it there.
+`_index.json` (titles, first prompts, mtimes, chunk lists, parent links). Sub-agent and
+side-chat transcripts are pushed too. Deleting a session locally does not remove it there.
 
 Uploads are incremental within a file: a jsonl session only grows, so each push is
 just the appended tail, saved as `<file>.jsonl.NNN.zst` (cut at a line break).
@@ -173,15 +183,21 @@ Set `SESSION_FINDER_NO_UPDATE=1` to skip the check.
   the same shape with `role=developer` is system prompt and is filtered.
 - `session_index.jsonl` covers about half the sessions; the rest fall back to the first 50 chars of the first prompt.
 - Many rollouts are not human conversations: Codex's approval reviewer writes
-  `Guardian review` sessions starting "The following is the Codex agent history…".
-  They are skipped, or they would drown every search.
+  `Guardian review` sessions starting "The following is the Codex agent history…", with
+  `source.subagent` and `parent_thread_id` in `session_meta`. They are kept but hidden as
+  sub-agents, or they would drown every search.
+- A side chat is a rollout with `forked_from_id` whose first user record is "Side conversation
+  boundary." (filtered); the parent's history is referenced, not copied in.
+- `archived_sessions/` is read as well as `sessions/`.
 - The first user message is often an injected `# AGENTS.md instructions for <dir>`; skipped.
 
 **Claude Code (`cl`)**
 - Title: the last `custom-title` in the file, else `summary`, else `last-prompt` / `agent-name`.
 - Tool results are also `{"type":"user"}` with `tool_result` content blocks — skipped,
   or "what the user said" fills up with command output.
-- Sub-agent records (`isSidechain: true`, `origin.kind != "human"`) are skipped too.
+- Sub-agent transcripts live in `<project>/<parentId>/subagents/agent-<id>.jsonl` (+ `.meta.json`
+  with `agentType` / `description`, used as the title); tags are `cl|agent-xxxxxxxx` (14 chars).
+  A forked session can carry a copy of the same sub-agent; `show` then reads the newest copy.
 - `cwd` is often missing; it's recovered from the directory name (`D--Work` → `D:\Work`).
 
 ## Output discipline
