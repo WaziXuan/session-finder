@@ -49,7 +49,7 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.11.22.1"
+VERSION = "2026.11.23.1"
 # Bump when scan() returns new fields, so cached metadata is rebuilt once.
 META_V = 3
 # The installer puts the script into the first client that has it: ~/.workbuddy,
@@ -196,6 +196,17 @@ def open_lines(path):
             yield from f
 
 
+def _records_with(path, needle: str):
+    """Parsed records from the lines that contain needle; broken lines are skipped."""
+    for line in open_lines(path):
+        if needle not in line:
+            continue
+        try:
+            yield json.loads(line)
+        except ValueError:
+            continue
+
+
 def blocks_text(content) -> str:
     if isinstance(content, str):
         return content
@@ -240,6 +251,36 @@ def subagent_of(path: Path) -> dict:
     except (OSError, ValueError):
         pass
     return info
+
+
+def parent_link(path: Path) -> dict:
+    """A `<session id>.parent.json` sidecar next to a transcript ties it to a session in
+    another client, e.g. a CodeBuddy run directed from a Claude Code session:
+    {"src": "cl", "id": "<parent id>", "agent": "ds:impl", "title": "..."}.
+    Returns {"parent", "parent_src", "agent", "title"} ("title" only when given),
+    or {} when there is no sidecar or it is unusable."""
+    name = path.name
+    for suffix in (".jsonl.zst", ".jsonl"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    try:
+        obj = json.loads(path.with_name(name + ".parent.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(obj, dict):
+        return {}
+    src, pid = obj.get("src"), obj.get("id")
+    if not isinstance(src, str) or src not in SOURCES:
+        return {}
+    if not isinstance(pid, str) or not pid:
+        return {}
+    agent = obj.get("agent")
+    link = {"parent": pid, "parent_src": src,
+            "agent": agent if isinstance(agent, str) and agent else "subagent"}
+    if isinstance(obj.get("title"), str) and obj["title"]:
+        link["title"] = obj["title"]
+    return link
 
 
 def guess_cwd_from_dirname(name: str) -> str:
@@ -308,13 +349,7 @@ class WB(Source):
                 "first_user": first or "", **sub}
 
     def messages(self, path):
-        for line in open_lines(path):
-            if '"role"' not in line:
-                continue
-            try:
-                o = json.loads(line)
-            except ValueError:
-                continue
+        for o in _records_with(path, '"role"'):
             role = o.get("role")
             if role not in ("user", "assistant"):
                 continue
@@ -415,13 +450,7 @@ class Codex(Source):
         return {"title": title or "", "cwd": cwd or "", "first_user": first or "", **sub}
 
     def messages(self, path):
-        for line in open_lines(path):
-            if '"response_item"' not in line:
-                continue
-            try:
-                o = json.loads(line)
-            except ValueError:
-                continue
+        for o in _records_with(path, '"response_item"'):
             p = o.get("payload") or {}
             if p.get("type") != "message":
                 continue
@@ -448,13 +477,7 @@ class Claude(Source):
     def scan(self, path):
         title = summary = last_prompt = first = None
         cwd = None
-        for line in open_lines(path):
-            if '"type"' not in line:
-                continue
-            try:
-                o = json.loads(line)
-            except ValueError:
-                continue
+        for o in _records_with(path, '"type"'):
             t = o.get("type")
             if t == "custom-title":
                 title = o.get("customTitle") or title
@@ -494,13 +517,7 @@ class Claude(Source):
         }
 
     def messages(self, path):
-        for line in open_lines(path):
-            if '"type"' not in line:
-                continue
-            try:
-                o = json.loads(line)
-            except ValueError:
-                continue
+        for o in _records_with(path, '"type"'):
             t = o.get("type")
             if t not in ("user", "assistant"):
                 continue
@@ -575,9 +592,19 @@ def local_rows(only=None) -> list[dict]:
             parent, agent = meta.get("parent") or "", meta.get("agent") or ""
             if not parent and any(first.startswith(m) for m in MACHINE_PROMPTS):
                 parent, agent = "?", "guardian"  # older rollouts without a parent id
+            # A sidecar ties this session to a parent in another client. It is read
+            # fresh every pass (never cached) so it can appear or vanish later.
+            link = parent_link(p)
+            parent_src = ""
+            if link and not parent:
+                parent = link["parent"]
+                parent_src = link["parent_src"]
+                agent = link["agent"]
+                if not real_title and link.get("title"):
+                    real_title = link["title"]
             if agent and real_title and not real_title.startswith("["):
                 real_title = f"[{agent}] {real_title}"
-            rows.append({
+            row = {
                 "parent": parent, "agent": agent,
                 "src": src.key, "host": "", "id": src.sid(p), "path": str(p),
                 "title": real_title or (first.splitlines()[0][:50] if first else "(untitled)"),
@@ -586,7 +613,10 @@ def local_rows(only=None) -> list[dict]:
                 "first_user": first,
                 "bytes": st.st_size,
                 "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
-            })
+            }
+            if parent_src:
+                row["parent_src"] = parent_src
+            rows.append(row)
     save_cache(cache)
     return rows
 
@@ -645,6 +675,9 @@ def tag_of(r: dict, full_id: bool = False) -> str:
     # CodeBuddy ids are UUIDv7: the first 12 hex digits are a timestamp, so 8 collide.
     # Claude sub-agent ids all start with "agent-a", so 8 characters would collide.
     # Codex sub-agent rollouts share the parent's first 8 characters.
+    # Ids a tool chose itself (--session-id ds-<parent>-<job>-<phase>) only differ at the end.
+    if r["id"].startswith("ds-"):
+        full_id = True
     n = (14 if r["id"].startswith("agent-") else
          13 if r["src"] == "cb" or (r["src"] == "cx" and is_sub(r)) else 8)
     return f"{src}|{r['id'] if full_id else r['id'][:n]}"
@@ -655,8 +688,11 @@ OWN_KINDS = ("side", "fork")
 
 
 def is_sub(r: dict) -> bool:
-    """A sub-agent run: hidden unless --subagents, listed under its parent."""
-    return bool(r.get("parent")) and r.get("agent") not in OWN_KINDS
+    """A sub-agent run: hidden unless --subagents, listed under its parent.
+
+    A sidecar link always counts: its `agent` is a display label ("ds:impl"), so
+    "side"/"fork" there say how the run was directed, not that the user owns it."""
+    return bool(r.get("parent")) and (bool(r.get("parent_src")) or r.get("agent") not in OWN_KINDS)
 
 
 def link_note(r: dict) -> str:
@@ -667,11 +703,15 @@ def link_note(r: dict) -> str:
 
 
 def children_of(rows: list[dict]) -> dict:
-    """(src, host, parent id) -> sub-agent rows, newest first."""
+    """(parent source, host, parent id) -> sub-agent rows, newest first.
+
+    A child that names its parent's source groups under that source, so a CodeBuddy
+    session directed from a Claude Code session hangs under the Claude row."""
     kids: dict = {}
     for r in rows:
         if r.get("parent"):
-            kids.setdefault((r["src"], r.get("host") or "", r["parent"]), []).append(r)
+            key = (r.get("parent_src") or r["src"], r.get("host") or "", r["parent"])
+            kids.setdefault(key, []).append(r)
     return kids
 
 
@@ -683,7 +723,7 @@ def parent_tag(r: dict) -> str:
     p = r.get("parent") or ""
     if p in ("", "?"):
         return L("（主会话未知）", "(parent unknown)")
-    return tag_of({**r, "id": p})
+    return tag_of({**r, "src": r.get("parent_src") or r["src"], "id": p})
 
 
 def fmt(rows: list[dict], full_id: bool = False, kids: dict | None = None) -> str:
@@ -920,8 +960,7 @@ def cmd_show(a) -> int:
         emit(*m)
     if me:
         h = me.get("host") or "local"
-        kids = [r for r in index(me["src"], h)
-                if r.get("parent") == me["id"] and (r.get("host") or "") == (me.get("host") or "")]
+        kids = kids_for(children_of(index(None, h)), me)
         kids.sort(key=lambda r: r.get("agent") not in OWN_KINDS)  # side chats first, stable by time
         if kids:
             print(L(f"\n# 挂在这个会话下的 {len(kids)} 个子代理/侧旁对话（show <标签> 读取）：",
@@ -1388,6 +1427,44 @@ def push_text(src: Source, p: Path, sid: str, rel: str, base: Path, cz, red=None
     return name
 
 
+def _push_session(r: dict, only, dest: Path, search: Path, state: dict, cz, red):
+    """Push one session's chunks and search text.
+    Returns (state entry, stat, sessions pushed, raw bytes, packed bytes, deleted chunks)."""
+    src = SOURCES[r["src"]]
+    p = Path(r["path"])
+    base = dest / r["src"]
+    try:
+        st = p.stat()
+        rel = p.relative_to(src.root).as_posix()
+    except (OSError, ValueError):
+        return None, None, 0, 0, 0, []
+    ent = state.get(r["path"])
+    if not isinstance(ent, dict):
+        ent = adopt_v1(ent, p, rel, base)
+    pushed = raw = packed = 0
+    gone: list = []
+    if only is None or r["path"] in only:
+        try:
+            n_raw, n_packed, gone = push(p, rel, base, st, ent, cz, red)
+        except OSError as e:
+            log_line(f"{HOST}: skip {p}: {e}")
+        else:
+            pushed = int(bool(n_raw))
+            raw, packed = n_raw, n_packed
+        stale = (ent.get("text_sig") != [st.st_mtime, st.st_size]
+                 or not ent.get("text", "").startswith("_search/"))
+        if ent.get("chunks") and stale:
+            try:
+                name = push_text(src, p, r["id"], rel, search / r["src"], cz, red)
+                if ent.get("text") and not ent["text"].startswith("_search/"):
+                    gone.append(base / ent["text"])  # pre-_search location
+                ent["text"] = f"_search/{HOST}/{r['src']}/{name}"
+                ent["text_sig"] = [st.st_mtime, st.st_size]
+            except (OSError, RuntimeError) as e:
+                log_line(f"{HOST}: text extract failed {p}: {e}")
+    return ent, st, pushed, raw, packed, gone
+
+
 def sync_once(only=None) -> tuple[int, str]:
     """Push this machine's sessions to <cloud>/<HOST>/ and rewrite its _index.json.
 
@@ -1421,43 +1498,22 @@ def sync_once(only=None) -> tuple[int, str]:
         state[REDACT_KEY] = red.sig
         note_red = f"; redacted {n_changed}/{n_seen} earlier files"
     for r in local_rows(None):
-        src = SOURCES[r["src"]]
-        p = Path(r["path"])
-        base = dest / r["src"]
-        try:
-            st = p.stat()
-            rel = p.relative_to(src.root).as_posix()
-        except (OSError, ValueError):
+        ent, st, n_pushed, n_raw, n_packed, gone = _push_session(
+            r, only, dest, search, state, cz, red)
+        if ent is None:
             continue
-        ent = state.get(r["path"])
-        if not isinstance(ent, dict):
-            ent = adopt_v1(ent, p, rel, base)
-        if only is None or r["path"] in only:
-            try:
-                n_raw, n_packed, gone = push(p, rel, base, st, ent, cz, red)
-            except OSError as e:
-                log_line(f"{HOST}: skip {p}: {e}")
-            else:
-                pushed += bool(n_raw)
-                raw += n_raw
-                packed += n_packed
-                doomed += gone
-            stale = ent.get("text_sig") != [st.st_mtime, st.st_size] or not ent.get("text", "").startswith("_search/")
-            if ent.get("chunks") and stale:
-                try:
-                    name = push_text(src, p, r["id"], rel, search / r["src"], cz, red)
-                    if ent.get("text") and not ent["text"].startswith("_search/"):
-                        doomed.append(base / ent["text"])  # pre-_search location
-                    ent["text"] = f"_search/{HOST}/{r['src']}/{name}"
-                    ent["text_sig"] = [st.st_mtime, st.st_size]
-                except (OSError, RuntimeError) as e:
-                    log_line(f"{HOST}: text extract failed {p}: {e}")
+        pushed += n_pushed
+        raw += n_raw
+        packed += n_packed
+        doomed += gone
         state[r["path"]] = ent
         if ent.get("chunks"):
+            link = {"parent": r["parent"], "agent": r["agent"],
+                    **({"parent_src": r["parent_src"]} if r.get("parent_src") else {})}
             entries.append({
                 "src": r["src"], "id": r["id"], "cloud_rel": ent["chunks"][0], "chunks": ent["chunks"],
                 **({"text": ent["text"]} if ent.get("text") else {}),
-                **({"parent": r["parent"], "agent": r["agent"]} if r.get("parent") else {}),
+                **(link if r.get("parent") else {}),
                 "title": r["title"], "has_title": r["has_title"], "cwd": r["cwd"],
                 "first_user": r["first_user"][:500], "bytes": st.st_size, "mtime": r["mtime"],
             })
