@@ -62,6 +62,10 @@ linked to the session it belongs to:
 - Sub-agent runs (Claude Code `subagents/agent-*.jsonl`, Codex Guardian reviews and spawned
   agents) are hidden from `list` / `find` / `grep` unless `--subagents`; the parent row says
   `+ N sub-agent(s)`, and `show <parent>` lists their tags at the end.
+- A session can name a parent in another client with a `<session id>.parent.json` file next
+  to its transcript: `{"src": "cl", "id": "<parent id>", "agent": "ds:impl", "title": "…"}`.
+  It is then treated as a sub-agent of that parent, e.g. CodeBuddy runs directed from a
+  Claude Code session (ds-director names them `cb|ds-<parent>-<job>-<phase>`).
 - Claude Code's `/btw` side questions are never written to disk, so they cannot be found.
 
 **Which one**: remember the title or the first question → `find`; remember only
