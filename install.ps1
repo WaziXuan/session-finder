@@ -17,11 +17,11 @@ $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # The script and venv go into one client's skills folder: where an earlier install
-# already put them, else WorkBuddy, Claude Code, Codex, CodeBuddy - the first one
+# already put them, else WorkBuddy, Claude Code, Codex, CodeBuddy, Qoder CN - the first one
 # installed. The other clients get only SKILL.md, pointing there.
-$clients = @('.workbuddy', '.claude', '.codex', '.codebuddy')
+$clients = @('.workbuddy', '.claude', '.codex', '.codebuddy', '.qoder-cn')
 $present = @($clients | Where-Object { Test-Path (Join-Path $env:USERPROFILE $_) })
-if (-not $present) { throw 'No supported client found (WorkBuddy, Claude Code, Codex or CodeBuddy CLI): install one first.' }
+if (-not $present) { throw 'No supported client found (WorkBuddy, Claude Code, Codex, CodeBuddy CLI or Qoder CN): install one first.' }
 $homeClient = $clients | Where-Object { Test-Path (Join-Path $env:USERPROFILE "$_\skills\session-finder\scripts\find_session.py") } |
     Select-Object -First 1
 if (-not $homeClient) { $homeClient = $present[0] }

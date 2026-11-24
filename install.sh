@@ -22,9 +22,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE="${XDG_CACHE_HOME:-$HOME/.cache}/session-finder"
 
 # The script and venv go into one client's skills folder: where an earlier install
-# already put them, else WorkBuddy, Claude Code, Codex, CodeBuddy - the first one
+# already put them, else WorkBuddy, Claude Code, Codex, CodeBuddy, Qoder CN - the first one
 # installed. The other clients get only SKILL.md, pointing there.
-CLIENTS=".workbuddy .claude .codex .codebuddy"
+CLIENTS=".workbuddy .claude .codex .codebuddy .qoder-cn"
 HOME_CLIENT=""
 for c in $CLIENTS; do
   if [ -f "$HOME/$c/skills/session-finder/scripts/find_session.py" ]; then HOME_CLIENT="$c"; break; fi
@@ -35,7 +35,7 @@ if [ -z "$HOME_CLIENT" ]; then
   done
 fi
 if [ -z "$HOME_CLIENT" ]; then
-  echo "No supported client found (WorkBuddy, Claude Code, Codex or CodeBuddy CLI): install one first." >&2
+  echo "No supported client found (WorkBuddy, Claude Code, Codex, CodeBuddy CLI or Qoder CN): install one first." >&2
   exit 1
 fi
 DEST="$HOME/$HOME_CLIENT/skills/session-finder"

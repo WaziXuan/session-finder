@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 # garble non-ASCII paths (e.g. a OneDrive folder named in Chinese).
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$py = @('.workbuddy', '.claude', '.codex', '.codebuddy') |
+$py = @('.workbuddy', '.claude', '.codex', '.codebuddy', '.qoder-cn') |
     ForEach-Object { Join-Path $env:USERPROFILE "$_\skills\session-finder\.venv\Scripts\python.exe" } |
     Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $py) { throw 'session-finder is not installed on this PC (run install.ps1 first)' }

@@ -2,7 +2,7 @@
 
 Every source root, the metadata cache and the sync state live under a fresh temp
 directory, and cloud_root() is stubbed out, so a test run never touches the real
-~/.claude, ~/.codex, ~/.workbuddy or ~/.codebuddy trees.
+~/.claude, ~/.codex, ~/.workbuddy, ~/.codebuddy or ~/.qoder-cn trees.
 """
 from __future__ import annotations
 
@@ -140,7 +140,7 @@ def ns(defaults: dict, **kw) -> argparse.Namespace:
 
 
 class FinderCase(unittest.TestCase):
-    """Temp roots for all four sources, temp cache, no multi-machine sync."""
+    """Temp roots for all five sources, temp cache, no multi-machine sync."""
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="sf-test-"))
@@ -154,6 +154,7 @@ class FinderCase(unittest.TestCase):
             "SYNC_LOG": find_session.SYNC_LOG,
             "SYNC_ROOT_FILE": find_session.SYNC_ROOT_FILE,
             "roots": {k: s.root for k, s in find_session.SOURCES.items()},
+            "qoder_app": find_session.Qoder.app_dir,
         }
         self.addCleanup(self._restore)
         find_session.CACHE = state / "index.json"
@@ -172,6 +173,10 @@ class FinderCase(unittest.TestCase):
             root.mkdir(parents=True, exist_ok=True)
             src.root = root
             self.roots[key] = root
+        self.qoder_app = self.tmp / "qoder-app"
+        self.qoder_app.mkdir()
+        find_session.Qoder.app_dir = self.qoder_app
+        find_session.Qoder._db = None
 
     def _restore(self) -> None:
         for key in ("CACHE", "STATE_DIR", "SYNC_STATE", "SYNC_LOG", "SYNC_ROOT_FILE"):
@@ -180,6 +185,8 @@ class FinderCase(unittest.TestCase):
         for key, src in find_session.SOURCES.items():
             src.root = self._saved["roots"][key]
         find_session.Codex._titles = None
+        find_session.Qoder.app_dir = self._saved["qoder_app"]
+        find_session.Qoder._db = None
         find_session.LAST_RESOLVED.clear()
 
     def _cloud_root(self):

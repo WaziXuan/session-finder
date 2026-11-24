@@ -2,10 +2,10 @@
 
 [English](README.md)
 
-把散在 **Claude Code**、**ChatGPT Codex**、**WorkBuddy**、**CodeBuddy CLI** 里的历史会话找回来、
+把散在 **Claude Code**、**ChatGPT Codex**、**WorkBuddy**、**CodeBuddy CLI**、**Qoder CN** 里的历史会话找回来、
 读出来、接着干——可选跨多台电脑。
 
-四个客户端都把对话存成 jsonl，但位置、字段、标题来源各不相同，单个文件能到 20 MB。
+五个客户端都把对话存成 jsonl，但位置、字段、标题来源各不相同，单个文件能到 20 MB。
 session-finder 是一个 agent skill 加一个 Python 脚本：建索引，按标题、对话内容或 id
 定位，只把需要的那几段读出来。这样你的 agent 能回答「上周那个会话最后定了什么」
 「把笔记本上那个会话接着做」，又不会把上下文撑爆。
@@ -32,7 +32,7 @@ bash install.sh
 
 安装脚本把脚本和装了 `zstandard` 的 venv（读 Codex 的压缩会话要用）放进一个客户端的
 skills 文件夹：有 WorkBuddy 就放 `~/.workbuddy/skills/session-finder/`，没有就按
-`~/.claude`、`~/.codex`、`~/.codebuddy` 的顺序放进第一个装了的；其他装了的客户端各放一份
+`~/.claude`、`~/.codex`、`~/.codebuddy`、`~/.qoder-cn` 的顺序放进第一个装了的；其他装了的客户端各放一份
 指向那里的 `SKILL.md`。之后新装的客户端，在 session-finder 下次运行时会自动补上 `SKILL.md`，不用重装。不会有后台进程，也不会往外传任何东西。
 装完**新开一个会话**，skill 才会加载。
 
@@ -51,8 +51,8 @@ skills 文件夹：有 WorkBuddy 就放 `~/.workbuddy/skills/session-finder/`，
 S=~/.workbuddy/skills/session-finder/scripts/find_session.py  # 安装时打印的那个目录
 PY=~/.workbuddy/skills/session-finder/.venv/bin/python          # Windows: .venv/Scripts/python.exe
 
-$PY $S list                        # 四个来源按时间倒序，标签如 cx|01a16eae、cl|11c4d28c
-$PY $S list --source cl            # all | wb | cx | cl | cb
+$PY $S list                        # 所有来源按时间倒序，标签如 cx|01a16eae、cl|11c4d28c
+$PY $S list --source cl            # all | wb | cx | cl | cb | qd
 $PY $S find 发票 解析               # 搜标题 + 首问
 $PY $S grep docker compose         # 全文；所有词须在同一会话里出现
 $PY $S grep PIPESTATUS --deep      # 连工具命令和输出一起搜
@@ -126,7 +126,7 @@ python find_session.py redact-add vps-root-password     # 会让你输两次
 
 - 会话文件只读。脚本只写自己的缓存/日志/状态目录（`%LOCALAPPDATA%\session-finder\` 或
   `~/.cache/session-finder/`），开了同步时再加 `<SessionSync>/<本机名>/`。
-- 子代理的记录（Claude Code 的 `subagents/`、Codex 的「Guardian review」和派生代理）都会索引和同步，但 `list` / `find` / `grep` 默认隐藏（加 `--subagents` 才显示），否则会淹没所有搜索结果；每条都挂在主会话下，`show <主会话>` 末尾会列出来。Codex 的侧旁对话照常列出，标 `[side]`。Claude Code 的 `/btw` 侧问本身不落盘，找不到。
+- 子代理的记录（Claude Code 的 `subagents/`、Codex 的「Guardian review」和派生代理）都会索引和同步，但 `list` / `find` / `grep` 默认隐藏（加 `--subagents` 才显示），否则会淹没所有搜索结果；每条都挂在主会话下，`show <主会话>` 末尾会列出来。Codex 和 Qoder 的侧旁对话照常列出，标 `[side]`。Qoder CN 从 WorkBuddy / Codex 导入的会话副本也同样默认隐藏（标 `[import]`，挂在原会话下），在 Qoder 里接着聊过的才照常列出（`[continued]`）；Qoder 的标题从它的 `main.sqlite` 只读读取。Claude Code 的 `/btw` 侧问本身不落盘，找不到。
   注入的提示词（WorkBuddy 的 `<user_info>`、Codex 的 `AGENTS.md instructions`、Claude Code
   的工具结果）不算作「你说的话」。
 - Codex 的 `session_index.jsonl` 只给约一半会话起了名字，其余用首问当标题。
@@ -136,14 +136,14 @@ python find_session.py redact-add vps-root-password     # 会让你输两次
 
 ```powershell
 Unregister-ScheduledTask SessionFinderSync -Confirm:$false -ErrorAction SilentlyContinue
-'.workbuddy', '.claude', '.codex', '.codebuddy' | ForEach-Object {
+'.workbuddy', '.claude', '.codex', '.codebuddy', '.qoder-cn' | ForEach-Object {
     Remove-Item -Recurse -Force "$env:USERPROFILE\$_\skills\session-finder" -ErrorAction SilentlyContinue }
 Remove-Item -Recurse -Force "$env:LOCALAPPDATA\session-finder"
 ```
 
 ```bash
 systemctl --user disable --now session-finder-sync 2>/dev/null
-rm -rf ~/.{workbuddy,claude,codex,codebuddy}/skills/session-finder ~/.cache/session-finder
+rm -rf ~/.{workbuddy,claude,codex,codebuddy,qoder-cn}/skills/session-finder ~/.cache/session-finder
 ```
 
 ## 协议

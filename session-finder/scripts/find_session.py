@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Locate and read past agent sessions from four local sources.
+"""Locate and read past agent sessions from five local sources.
 
   wb      WorkBuddy     %USERPROFILE%\\.workbuddy\\projects\\<proj>\\<sessionId>.jsonl
   cx      Codex         %USERPROFILE%\\.codex\\sessions\\<Y>\\<M>\\<D>\\rollout-*.jsonl[.zst]
                         titles live in %USERPROFILE%\\.codex\\session_index.jsonl
   cl      Claude Code   %USERPROFILE%\\.claude\\projects\\<proj>\\<sessionId>.jsonl
   cb      CodeBuddy CLI ~/.codebuddy/projects/<proj>/<sessionId>.jsonl (same records as wb)
+  qd      Qoder CN      ~/.qoder-cn/projects/<proj>/<sessionId>.jsonl (same records as cl);
+                        titles, side chats and imports in the app's main.sqlite and
+                        sessionMigration.sqlite (%APPDATA%\\com.qodercn.app.stable)
 
 Optional multi-machine sync: `sync` / `watch` push this machine's sessions,
-zstd-compressed, to <SessionSync>\\<COMPUTERNAME>\\{wb,cx,cl,cb}\\... plus a small
+zstd-compressed, to <SessionSync>\\<COMPUTERNAME>\\{wb,cx,cl,cb,qd}\\... plus a small
 _index.json, where <SessionSync> is any folder a file-sync client shares between
 your machines (OneDrive, Dropbox, an rclone mirror...). Turn it on with
 `sync-root <folder>` (the installers' -Sync / --sync do this). list/find/show then
@@ -49,12 +52,12 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.11.23.1"
+VERSION = "2026.11.25.1"
 # Bump when scan() returns new fields, so cached metadata is rebuilt once.
-META_V = 3
+META_V = 4
 # The installer puts the script into the first client that has it: ~/.workbuddy,
-# else ~/.claude, ~/.codex, ~/.codebuddy. The other clients get only SKILL.md.
-CLIENTS = (".workbuddy", ".claude", ".codex", ".codebuddy")
+# else ~/.claude, ~/.codex, ~/.codebuddy, ~/.qoder-cn. The other clients get only SKILL.md.
+CLIENTS = (".workbuddy", ".claude", ".codex", ".codebuddy", ".qoder-cn")
 SKILL_HOME = Path(__file__).resolve().parents[1]
 END_MARK = b"# end of find_session.py"  # must stay the file's last line
 
@@ -309,6 +312,11 @@ class Source:
         """Yield (timestamp, role, text) for human-readable turns."""
         raise NotImplementedError
 
+    def live(self, path: Path, meta: dict) -> dict:
+        """Facts kept outside the transcript (an app database), read every pass and never
+        cached: any of title, cwd, parent, parent_src, agent. They win over scan()."""
+        return {}
+
 
 class WB(Source):
     key, label = "wb", "WorkBuddy"
@@ -540,9 +548,105 @@ class CodeBuddy(WB):
     root = HOME / ".codebuddy" / "projects"
 
 
-SOURCES = {s.key: s for s in (WB(), Codex(), Claude(), CodeBuddy())}
+def _app_data(name: str) -> Path:
+    """Where an Electron app keeps its userData folder on this OS."""
+    if sys.platform == "win32":
+        return Path(os.environ.get("APPDATA") or HOME / "AppData" / "Roaming") / name
+    if sys.platform == "darwin":
+        return HOME / "Library" / "Application Support" / name
+    return Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / name
+
+
+def _sqlite_rows(db: Path, sql: str) -> list:
+    """Read-only query on an app's live SQLite file; [] when it is missing or locked."""
+    if not db.is_file():
+        return []
+    import sqlite3
+    for uri in (f"{db.as_uri()}?mode=ro", f"{db.as_uri()}?immutable=1"):
+        try:
+            con = sqlite3.connect(uri, uri=True, timeout=2)
+            try:
+                return con.execute(sql).fetchall()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            continue
+    return []
+
+
+class Qoder(Claude):
+    """Qoder CN (the desktop app and its qodercli) writes Claude Code style records
+    to ~/.qoder-cn/projects/<proj>/<sessionId>.jsonl. Titles, side chats and
+    automation runs live in the app's main.sqlite; sessions it imported from
+    WorkBuddy / Codex are listed in sessionMigration.sqlite."""
+    key, label = "qd", "Qoder"
+    root = HOME / ".qoder-cn" / "projects"
+    app_dir = _app_data("com.qodercn.app.stable")
+    _db = None
+
+    def sessions(self):
+        # Only top-level transcripts and sub-agent runs; memory/ and state folders hold no chats.
+        if not self.root.exists():
+            return []
+        return [p for p in self.root.rglob("*.jsonl")
+                if p.parent.parent == self.root or p.parent.name == "subagents"]
+
+    def scan(self, path):
+        meta = super().scan(path)
+        # Records the app wrote for a prompt typed in Qoder carry "humanInput";
+        # an imported transcript has none until the user continues it here.
+        native = False
+        for line in open_lines(path):
+            if '"humanInput"' in line:
+                native = True
+                break
+        return {**meta, "native": native}
+
+    def db(self) -> dict:
+        """{session id: {title, cwd, kind, owner, import_src, import_ref}}, read
+        once per run: titles change in the app without touching the transcript."""
+        if Qoder._db is None:
+            out: dict = {}
+            for sid, title, cwd, kind, owner in _sqlite_rows(
+                    self.app_dir / "main.sqlite",
+                    "select session_id, title, cwd, session_kind, owner_session_id"
+                    " from chat_sessions"):
+                out[sid] = {"title": title or "", "cwd": cwd or "", "kind": kind or "",
+                            "owner": owner or ""}
+            for prod, ref, sid in _sqlite_rows(
+                    self.app_dir / "sessionMigration.sqlite",
+                    "select source_product, source_ref, target_session_id from migration_ledger"
+                    " where status in ('imported', 'partial')"):
+                src = {"workbuddy": "wb", "codex": "cx", "codebuddy": "cb",
+                       "claude": "cl", "claude-code": "cl"}.get((prod or "").lower())
+                if src and ref:
+                    out.setdefault(sid, {}).update(import_src=src, import_ref=ref)
+            Qoder._db = out
+        return Qoder._db
+
+    def live(self, path: Path, meta: dict) -> dict:
+        info = self.db().get(self.sid(path)) or {}
+        out = {}
+        if info.get("title"):
+            out["title"] = info["title"]
+        if info.get("cwd"):
+            out["cwd"] = info["cwd"]
+        if info.get("kind") == "sideChat" and info.get("owner"):
+            out.update(parent=info["owner"], agent="side")
+        elif info.get("kind") == "automationExecution":
+            out.update(parent=info.get("owner") or "?", agent="automation")
+        elif info.get("import_src"):
+            # A copy of a WorkBuddy / Codex session: hidden like a sub-agent so searches
+            # do not hit it twice, unless the user went on talking in Qoder.
+            out.update(parent=info["import_ref"], parent_src=info["import_src"],
+                       agent="continued" if meta.get("native") else "import")
+        return out
+
+
+SOURCES = {s.key: s for s in (WB(), Codex(), Claude(), CodeBuddy(), Qoder())}
 ALIASES = {"all": None, "wb": "wb", "workbuddy": "wb", "cx": "cx", "codex": "cx",
-           "cl": "cl", "claude": "cl", "cb": "cb", "codebuddy": "cb"}
+           "cl": "cl", "claude": "cl", "cb": "cb", "codebuddy": "cb",
+           "qd": "qd", "qoder": "qd", "qoder-cn": "qd"}
 
 
 def norm_source(v: str):
@@ -590,12 +694,18 @@ def local_rows(only=None) -> list[dict]:
             real_title = meta.get("title") or ""
             first = meta.get("first_user") or ""
             parent, agent = meta.get("parent") or "", meta.get("agent") or ""
+            parent_src = ""
+            live = src.live(p, meta)
+            if live.get("title"):
+                real_title = live["title"]
+            if live.get("parent"):
+                parent, agent = live["parent"], live.get("agent") or "subagent"
+                parent_src = live.get("parent_src") or ""
             if not parent and any(first.startswith(m) for m in MACHINE_PROMPTS):
                 parent, agent = "?", "guardian"  # older rollouts without a parent id
             # A sidecar ties this session to a parent in another client. It is read
             # fresh every pass (never cached) so it can appear or vanish later.
             link = parent_link(p)
-            parent_src = ""
             if link and not parent:
                 parent = link["parent"]
                 parent_src = link["parent_src"]
@@ -609,7 +719,7 @@ def local_rows(only=None) -> list[dict]:
                 "src": src.key, "host": "", "id": src.sid(p), "path": str(p),
                 "title": real_title or (first.splitlines()[0][:50] if first else "(untitled)"),
                 "has_title": bool(real_title),
-                "cwd": meta.get("cwd") or "",
+                "cwd": live.get("cwd") or meta.get("cwd") or "",
                 "first_user": first,
                 "bytes": st.st_size,
                 "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
@@ -684,7 +794,8 @@ def tag_of(r: dict, full_id: bool = False) -> str:
 
 
 # Linked to a parent but still the user's own conversation: listed normally.
-OWN_KINDS = ("side", "fork")
+# "continued" is a Qoder copy of a WorkBuddy / Codex session the user went on with.
+OWN_KINDS = ("side", "fork", "continued")
 
 
 def is_sub(r: dict) -> bool:
@@ -692,13 +803,21 @@ def is_sub(r: dict) -> bool:
 
     A sidecar link always counts: its `agent` is a display label ("ds:impl"), so
     "side"/"fork" there say how the run was directed, not that the user owns it."""
-    return bool(r.get("parent")) and (bool(r.get("parent_src")) or r.get("agent") not in OWN_KINDS)
+    if not r.get("parent"):
+        return False
+    if r.get("agent") == "continued":
+        return False
+    return bool(r.get("parent_src")) or r.get("agent") not in OWN_KINDS
 
 
 def link_note(r: dict) -> str:
     k = r.get("agent")
     what = (L("侧旁对话，主会话", "side chat of") if k == "side" else
-            L("分叉自", "forked from") if k == "fork" else L("子代理，主会话", "sub-agent of"))
+            L("分叉自", "forked from") if k == "fork" else
+            L("Qoder 导入的副本，原会话", "Qoder's imported copy of") if k == "import" else
+            L("导入 Qoder 后接着聊，原会话", "imported into Qoder and continued, from") if k == "continued" else
+            L("自动化运行，所属", "automation run of") if k == "automation" else
+            L("子代理，主会话", "sub-agent of"))
     return f"↳ {what} {parent_tag(r)}"
 
 
@@ -736,9 +855,12 @@ def fmt(rows: list[dict], full_id: bool = False, kids: dict | None = None) -> st
             out.append(f"{'':{w}} {'':16}  {'':>7}  {link_note(r)}")
         if kids and kids_for(kids, r):
             ks = kids_for(kids, r)
-            n_side = sum(k.get("agent") in OWN_KINDS for k in ks)
+            n_imp = sum(k.get("agent") in ("import", "continued") for k in ks)
+            n_side = sum(k.get("agent") in ("side", "fork") for k in ks)
+            n_sub = len(ks) - n_side - n_imp
             parts = ([L(f"{n_side} 个侧旁对话/分叉", f"{n_side} side chat(s)/fork(s)")] if n_side else []) + \
-                    ([L(f"{len(ks) - n_side} 个子代理", f"{len(ks) - n_side} sub-agent(s)")] if len(ks) > n_side else [])
+                    ([L(f"{n_imp} 份 Qoder 导入副本", f"{n_imp} Qoder import(s)")] if n_imp else []) + \
+                    ([L(f"{n_sub} 个子代理", f"{n_sub} sub-agent(s)")] if n_sub else [])
             out.append(f"{'':{w}} {'':16}  {'':>7}  + {', '.join(parts)}{L('（show 末尾列出）', ' (listed at the end of show)')}")
         if r["cwd"]:
             out.append(f"{'':{w}} {'':16}  {'':>7}  cwd={r['cwd']}")
@@ -754,8 +876,8 @@ def resolve(ref: str, host: str = "all"):
             k, host = k.split("@", 1)
         k = norm_source(k)
         if k not in SOURCES:
-            print(L(f"未知来源前缀：{ref.split('|')[0]}（用 wb / cx / cl / cb，可加 @电脑名）",
-                    f"unknown source prefix: {ref.split('|')[0]} (use wb / cx / cl / cb, optionally @HOST)"))
+            print(L(f"未知来源前缀：{ref.split('|')[0]}（用 wb / cx / cl / cb / qd，可加 @电脑名）",
+                    f"unknown source prefix: {ref.split('|')[0]} (use wb / cx / cl / cb / qd, optionally @HOST)"))
             return None
         hits = [r for r in index(k, host) if r["id"].startswith(sid)]
     else:
@@ -1745,12 +1867,12 @@ def cmd_watch(a) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=L("查找和读取 agent 会话（wb / cx / cl / cb），包括本机和同步来的其他机器",
-                                             "Find and read agent sessions (wb / cx / cl / cb), local and synced from other machines"))
+    ap = argparse.ArgumentParser(description=L("查找和读取 agent 会话（wb / cx / cl / cb / qd），包括本机和同步来的其他机器",
+                                             "Find and read agent sessions (wb / cx / cl / cb / qd), local and synced from other machines"))
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("list", help=L("按时间倒序列出会话", "list sessions, newest first"))
-    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb")
+    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>（同步来的其他机器）", "all|local|<computer name> (other machines, synced)"))
     p.add_argument("--limit", type=int, default=15)
     p.add_argument("--subagents", action="store_true", help=L("把子代理会话也列出来/一起搜（默认隐藏，挂在主会话下）", "include sub-agent sessions (hidden by default, linked to their parent)"))
@@ -1758,7 +1880,7 @@ def main() -> int:
 
     p = sub.add_parser("find", help=L("按标题/首问关键词搜索", "search titles and first prompts"))
     p.add_argument("keywords", nargs="+")
-    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb")
+    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>（同步来的其他机器）", "all|local|<computer name> (other machines, synced)"))
     p.add_argument("--limit", type=int, default=8)
     p.add_argument("--subagents", action="store_true", help=L("把子代理会话也列出来/一起搜（默认隐藏，挂在主会话下）", "include sub-agent sessions (hidden by default, linked to their parent)"))
@@ -1766,7 +1888,7 @@ def main() -> int:
 
     p = sub.add_parser("grep", help=L("按对话内容全文搜索（标题不记得时用）；所有关键词都要在同一会话中出现", "full-text search of what was said; every word must occur in the same session"))
     p.add_argument("keywords", nargs="+")
-    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb")
+    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>", "all|local|<computer name>"))
     p.add_argument("--role", choices=["user", "assistant", "all"], default="all")
     p.add_argument("--limit", type=int, default=8, help=L("最多列几个会话", "max sessions to list"))

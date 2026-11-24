@@ -3,7 +3,7 @@
 [中文说明](README.zh-CN.md)
 
 Find, read and continue your past AI coding-agent conversations — across **Claude Code**,
-**ChatGPT Codex**, **WorkBuddy** and **CodeBuddy CLI**, and optionally across all your machines.
+**ChatGPT Codex**, **WorkBuddy**, **CodeBuddy CLI** and **Qoder CN**, and optionally across all your machines.
 
 Each client stores sessions as jsonl, but in different places, with different fields and
 title sources, and a single file can reach 20 MB. session-finder is an agent skill plus
@@ -48,7 +48,7 @@ bash install.sh
 
 The installer puts the script and a venv with `zstandard` (Codex's compressed sessions
 need it) into one client's skills folder — `~/.workbuddy/skills/session-finder/` if you
-have WorkBuddy, else the first of `~/.claude`, `~/.codex`, `~/.codebuddy` — and a
+have WorkBuddy, else the first of `~/.claude`, `~/.codex`, `~/.codebuddy`, `~/.qoder-cn` — and a
 `SKILL.md` pointing there into each of the other clients you have. A client you install
 later gets its `SKILL.md` the next time session-finder runs; no need to reinstall. Nothing runs in the background and nothing leaves your machine.
 **Start a new agent session** afterwards so the skill is loaded.
@@ -71,7 +71,7 @@ S=~/.claude/skills/session-finder/scripts/find_session.py     # the folder the i
 PY=~/.claude/skills/session-finder/.venv/bin/python             # Windows: .venv/Scripts/python.exe
 
 $PY $S list                        # all clients, newest first; tags like cx|01a16eae, cl|11c4d28c
-$PY $S list --source cl            # all | wb | cx | cl | cb
+$PY $S list --source cl            # all | wb | cx | cl | cb | qd
 $PY $S find invoice parser         # title + first prompt
 $PY $S grep docker compose         # full text; every word must be in the same session
 $PY $S grep PIPESTATUS --deep      # also search tool calls and their output
@@ -166,6 +166,9 @@ from `<SessionSync>/_install` within 10 minutes.
   agents) are indexed and synced but hidden from `list` / `find` / `grep` unless
   `--subagents`, otherwise they drown every search; each is linked to its parent session,
   and `show <parent>` lists them. Codex side chats are listed normally as `[side]`.
+  Qoder CN's copies of sessions it imported from WorkBuddy / Codex are hidden the same way
+  (`[import]`, linked to the original) until you continue one in Qoder (`[continued]`).
+  Qoder titles come from the app's `main.sqlite`, read read-only.
   Claude Code's `/btw` questions are never saved by Claude Code itself. Injected prompts (WorkBuddy's `<user_info>`, Codex's
   `AGENTS.md instructions`, Claude Code tool results) are filtered out of "what you said".
 - Codex's `session_index.jsonl` names only about half the sessions; the rest are titled
@@ -177,14 +180,14 @@ from `<SessionSync>/_install` within 10 minutes.
 
 ```powershell
 Unregister-ScheduledTask SessionFinderSync -Confirm:$false -ErrorAction SilentlyContinue
-'.workbuddy', '.claude', '.codex', '.codebuddy' | ForEach-Object {
+'.workbuddy', '.claude', '.codex', '.codebuddy', '.qoder-cn' | ForEach-Object {
     Remove-Item -Recurse -Force "$env:USERPROFILE\$_\skills\session-finder" -ErrorAction SilentlyContinue }
 Remove-Item -Recurse -Force "$env:LOCALAPPDATA\session-finder"
 ```
 
 ```bash
 systemctl --user disable --now session-finder-sync 2>/dev/null
-rm -rf ~/.{workbuddy,claude,codex,codebuddy}/skills/session-finder ~/.cache/session-finder
+rm -rf ~/.{workbuddy,claude,codex,codebuddy,qoder-cn}/skills/session-finder ~/.cache/session-finder
 ```
 
 ## License

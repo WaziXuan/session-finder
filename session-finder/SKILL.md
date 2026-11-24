@@ -1,6 +1,6 @@
 ---
 name: session-finder
-description: Locates and reads the user's own past agent conversations across four clients — WorkBuddy, ChatGPT Codex, Claude Code and CodeBuddy CLI — on this machine and, if multi-machine sync is on, on the user's other machines, by title, by anything said inside the conversation (full-text), or by session id, then extracts what was actually asked or decided, or picks up where that session left off. Use when the user refers to an earlier conversation ("that session where we analysed X", "find my earlier chat about Y", "what did I ask Codex/Claude last week", "continue the session from my other PC", "那个分析 XXX 的会话", "上次那个 session", "找一下我之前的对话", "以前 codex/claude 里聊过的", "之前在哪个对话里提到过 XXX", "另一台电脑上聊过的", "接着那个会话干"), shows a screenshot of a session title, or when prior-session context is needed but the built-in conversation search returns nothing.
+description: Locates and reads the user's own past agent conversations across five clients — WorkBuddy, ChatGPT Codex, Claude Code, CodeBuddy CLI and Qoder CN — on this machine and, if multi-machine sync is on, on the user's other machines, by title, by anything said inside the conversation (full-text), or by session id, then extracts what was actually asked or decided, or picks up where that session left off. Use when the user refers to an earlier conversation ("that session where we analysed X", "find my earlier chat about Y", "what did I ask Codex/Claude/Qoder last week", "continue the session from my other PC", "那个分析 XXX 的会话", "上次那个 session", "找一下我之前的对话", "以前 codex/claude/qoder 里聊过的", "之前在哪个对话里提到过 XXX", "另一台电脑上聊过的", "接着那个会话干"), shows a screenshot of a session title, or when prior-session context is needed but the built-in conversation search returns nothing.
 ---
 
 # Session finder
@@ -8,7 +8,7 @@ description: Locates and reads the user's own past agent conversations across fo
 Find a past session across four local stores, then read only the slice that
 matters. Never read a whole transcript into context — files reach 20 MB.
 
-## The four sources
+## The five sources
 
 | key | client | transcript location | title source |
 |-----|--------|--------------------|--------------|
@@ -16,6 +16,7 @@ matters. Never read a whole transcript into context — files reach 20 MB.
 | `cx` | ChatGPT Codex | `~/.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl[.zst]` | `~/.codex/session_index.jsonl` → `thread_name` |
 | `cl` | Claude Code | `~/.claude/projects/<proj>/<id>.jsonl` | `{"type":"custom-title","customTitle":…}` record |
 | `cb` | CodeBuddy CLI | `~/.codebuddy/projects/<proj>/<id>.jsonl` | same records as wb; usually untitled → first prompt |
+| `qd` | Qoder CN | `~/.qoder-cn/projects/<proj>/<id>.jsonl` | same records as cl; title from the app's `main.sqlite` (`%APPDATA%/com.qodercn.app.stable`) |
 
 `<proj>` is the cwd with `:` and `\` mangled (`D:\Work` → `d-Work` for wb,
 `D--Work` for cl). Access to these dot-directories is often denied to an agent's
@@ -66,6 +67,10 @@ linked to the session it belongs to:
   to its transcript: `{"src": "cl", "id": "<parent id>", "agent": "ds:impl", "title": "…"}`.
   It is then treated as a sub-agent of that parent, e.g. CodeBuddy runs directed from a
   Claude Code session (ds-director names them `cb|ds-<parent>-<job>-<phase>`).
+- Qoder CN copies sessions it imported from WorkBuddy / Codex into its own folder. An
+  untouched copy is hidden like a sub-agent (`[import]`, `↳ Qoder's imported copy of cx|…`)
+  so a search does not hit it twice; once you go on talking in Qoder it is listed as
+  `[continued]`. Qoder side chats are `[side]`, automation runs are hidden as sub-agents.
 - Claude Code's `/btw` side questions are never written to disk, so they cannot be found.
 
 **Which one**: remember the title or the first question → `find`; remember only
@@ -164,7 +169,7 @@ sync folder — raw chunks, dialogue extracts, index titles. Local transcripts a
 The installed script checks `<SessionSync>/_install/session-finder/scripts/find_session.py`
 on every run (the watcher every 10 min). If its `VERSION` is higher and the file is
 complete (last line `# end of find_session.py`), it replaces itself, copies the new
-SKILL.md into the `~/.workbuddy`, `~/.claude`, `~/.codex` and `~/.codebuddy` skills, and
+SKILL.md into the `~/.workbuddy`, `~/.claude`, `~/.codex`, `~/.codebuddy` and `~/.qoder-cn` skills, and
 reruns the same command — you may see `(session-finder 已从同步文件夹自动更新：A -> B)` on
 stderr; just use the output. `publish.ps1` in the repo puts a new version there.
 Set `SESSION_FINDER_NO_UPDATE=1` to skip the check.
