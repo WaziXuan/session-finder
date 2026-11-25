@@ -1,53 +1,44 @@
 ---
 name: session-finder
-description: "Find and read past conversations from WorkBuddy, Codex, Claude Code, CodeBuddy, Qoder and Antigravity on this Windows machine, then optionally sync them to the shared archive. Use when the user asks what they previously asked, wants to locate a chat by keyword or phrase, read a specific session, grep old conversations, or save recent sessions."
+description: Session Finder integration for Amazon Quick Desktop. Two directions — (1) let other agents read your Quick history by exporting it locally with the quick-history-export skill (recommended, no credentials), and (2) optionally let Quick search the other agents' histories through a local MCP server. Use when the user asks to connect Quick to Session Finder, find a past chat from any client, or make Quick's own conversations searchable elsewhere.
 ---
 
-# Session Finder (local, via MCP)
+# Session Finder ↔ Amazon Quick
 
-This machine keeps six local conversation stores. Session Finder indexes them and
-serves them through the `session-finder` MCP server. Never guess from memory what
-the user said earlier — retrieve it.
+There are two separate skills here. Import them into Quick from
+**Settings → Capabilities → Skills** (upload the `.md` file or a folder).
 
-## When to use
+## 1. `export-history/SKILL.md` — Quick writes its own history (recommended)
 
-- "What did I ask about X before?" / "以前聊过什么" → `find_sessions`, then `show_session`.
-- A remembered phrase, symbol, path or error message → `grep_sessions`.
-- "What did I talk about recently?" → `list_sessions`.
-- "Save these sessions / make other machines able to find them" → `sync_sessions`.
+This is the direction that makes **other agents able to read Quick's chats**.
+Quick's conversations live in a credential-gated cloud outpost, so no other agent
+can reach them. This skill has Quick itself write a redacted, local JSONL copy of
+the current conversation to:
 
-## Tools
+```
+C:\Users\OOF\.quickwork\session-finder-export\
+```
 
-| Tool | Purpose |
-| --- | --- |
-| `list_sessions(source, limit)` | Recent sessions. |
-| `find_sessions(query, source, limit)` | Search titles and first user messages. |
-| `grep_sessions(pattern, source)` | Full-text search across transcripts. |
-| `show_session(ref, role, head, max_chars)` | Read a slice of one session. |
-| `sync_sessions()` | Refresh index and copy excerpts to SessionSync. |
+Session Finder's `qk` source then indexes those files, and any agent on this machine
+can `find` / `grep` / `show` them. No credentials, no cloud API, no config changes.
+Import `export-history/SKILL.md`, then in a Quick chat say "export this conversation".
 
-Source keys: `all` (default), `wb` WorkBuddy, `cx` Codex, `cl` Claude Code,
-`cb` CodeBuddy, `qd` Qoder CN, `ag` Google Antigravity. Each may be suffixed
-with `@HOST` to query another machine, e.g. `cl@MACMINI6`.
+## 2. `session_finder_mcp.py` — Quick reads the other agents' history (optional)
 
-## Workflow
+A zero-dependency stdio MCP server that wraps the local Session Finder CLI. Quick
+can call `list_sessions`, `find_sessions`, `grep_sessions`, `show_session` and
+`sync_sessions` over its own MCP client. This is the opposite direction and is not
+needed for other agents to read Quick.
 
-1. Narrow down first: `find_sessions` for intent, `grep_sessions` for exact text.
-2. Then `show_session` on the most promising `ref` (e.g. `ag|5b754e44`).
-   Use `role="user"` for what the human said, `role="all"` for the exchange.
-3. Answer with the session id and only the relevant slice. Do not dump whole
-   transcripts into the conversation.
+To wire it up: **Settings → Capabilities → MCP → + Add MCP → Local**, with
 
-## Rules
+- command: `C:\Users\OOF\.workbuddy\skills\session-finder\.venv\Scripts\python.exe`
+- args: `["C:\Users\OOF\Downloads\session-finder-kit\amazon-quick\session_finder_mcp.py"]`
 
-- Search all sources by default; honor an explicit client name or source prefix.
-- Results are excerpts from local files. If a session is missing, run `sync_sessions`
-  once and retry; do not invent an answer.
-- Never read or repeat credentials, tokens or private keys that appear in a
-  transcript. Antigravity's raw protobuf `conversations/*.db` files are not
-  synced; only their jsonl logs are indexed.
-- Amazon Quick's own conversations live in the cloud and are NOT in this index.
-  Say so plainly if the user expects to find a Quick chat here.
-- The underlying CLI is at
-  `C:\Users\OOF\.workbuddy\skills\session-finder\scripts\find_session.py`.
-  If a tool errors, report the error text; do not silently switch to guessing.
+If the UI has no "Add MCP" entry, this connector is gated off in your Quick build —
+skip it; direction 1 needs no MCP at all.
+
+## Source keys
+
+`all` (default), `wb` WorkBuddy, `cx` Codex, `cl` Claude Code, `cb` CodeBuddy,
+`qd` Qoder CN, `ag` Antigravity, `ds` DeepSeek Harness, `qk` Amazon Quick.

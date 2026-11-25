@@ -17,7 +17,7 @@ SCRIPT = r"C:\Users\OOF\.workbuddy\skills\session-finder\scripts\find_session.py
 if not Path(PY).is_file():
     PY = sys.executable
 
-SOURCES = ("all", "wb", "cx", "cl", "cb", "qd", "ag", "ds")
+SOURCES = ("all", "wb", "cx", "cl", "cb", "qd", "ag", "ds", "qk")
 MAX_CHARS = 12000
 
 
@@ -48,7 +48,7 @@ def source_arg(args):
 TOOLS = [
     {
         "name": "list_sessions",
-        "description": "List the most recent indexed conversations. source: all|wb|cx|cl|cb|qd|ag (wb=WorkBuddy, cx=Codex, cl=Claude Code, cb=CodeBuddy, qd=Qoder, ag=Antigravity, ds=DeepSeek Harness). Use this when the user asks what they talked about recently.",
+        "description": "List the most recent indexed conversations. source: all|wb|cx|cl|cb|qd|ag|ds|qk (wb=WorkBuddy, cx=Codex, cl=Claude Code, cb=CodeBuddy, qd=Qoder, ag=Antigravity, ds=DeepSeek Harness, qk=Amazon Quick). Use this when the user asks what they talked about recently.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -140,7 +140,7 @@ def handle(msg):
         return ok({
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "session-finder", "version": "2026.11.25.2"},
+            "serverInfo": {"name": "session-finder", "version": "2026.11.25.4"},
         })
     if method == "ping":
         return ok({})
