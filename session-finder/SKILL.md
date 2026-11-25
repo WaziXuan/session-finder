@@ -19,7 +19,7 @@ matters. Never read a whole transcript into context — files reach 20 MB.
 | `qd` | Qoder CN | `~/.qoder-cn/projects/<proj>/<id>.jsonl` | same records as cl; title from the app's `main.sqlite` (`%APPDATA%/com.qodercn.app.stable`) |
 | `ag` | Google Antigravity | `~/.gemini/antigravity/brain/<id>/.system_generated/logs/transcript.jsonl` | `~/.gemini/antigravity/conversation_summaries.db` → `title` |
 | `ds` | DeepSeek Harness | `~/.dsh/sessions/<workspace>/session-<id>/session.v4.jsonl.zstd` | `~/.dsh/storages/session_projcache/sessions/<id>.json` → `rows.title.val` |
-| `qk` | Amazon Quick | `~/.quickwork/session-finder-export/<id>.jsonl` (written by the `quick-history-export` skill inside Quick) | `{"type":"meta",…}` record → `title` |
+| `qk` | Amazon Quick | `~/.quickwork/session-finder-export/<id>.jsonl` (written by the `quick-session-finder` skill inside Quick) | `{"type":"meta",…}` record → `title` |
 
 `<proj>` is the cwd with `:` and `\` mangled (`D:\Work` → `d-Work` for wb,
 `D--Work` for cl). Access to these dot-directories is often denied to an agent's
@@ -245,13 +245,13 @@ Set `SESSION_FINDER_NO_UPDATE=1` to skip the check.
 
 **Amazon Quick (`qk`)**
 - Quick stores its conversations in a cloud outpost that needs credentials this
-  skill must never touch. Instead, the `quick-history-export` skill installed inside
+  skill must never touch. Instead, the `quick-session-finder` skill installed inside
   Quick writes a local copy of each conversation to
   `~/.quickwork/session-finder-export/<id>.jsonl`, and `qk` reads those files.
 - The format is WorkBuddy-compatible: a first `{"type":"meta",…}` record holds the
   id/title/cwd, then ordinary `user`/`assistant` records with `content:[{"type":"text",…}]`.
 - If `qk` shows nothing, Quick has not exported yet — ask the user to run the
-  `quick-history-export` skill inside Quick. Do not try to read Quick's credentials
+  `quick-session-finder` skill inside Quick. Do not try to read Quick's credentials
   or call its outpost API; there is no local transcript until Quick writes one.
 - Exported files are redacted by Quick before they land; only dialogue is kept.
 

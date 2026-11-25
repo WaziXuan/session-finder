@@ -8,7 +8,7 @@ Find, read and continue your past AI coding-agent conversations — across **Cla
 Most clients store sessions as jsonl, but in different places, with different fields and
 title sources, and a single file can reach 20 MB (Antigravity keeps a jsonl log beside its
 SQLite step database; DeepSeek Harness writes zstd-compressed event streams). Amazon Quick
-does not expose a local transcript, so its `quick-history-export` skill writes one for you.
+does not expose a local transcript, so its `quick-session-finder` skill writes one for you.
 session-finder is an agent skill plus
 one Python script: it indexes all of them, finds a session by title, by anything said
 in it, or by id, and reads back only the part you need — so your agent can answer
@@ -179,7 +179,7 @@ from `<SessionSync>/_install` within 10 minutes.
   `~/.dsh/sessions/`; titles come from `session_projcache`. Only goal and real user
   records are indexed — injected runtime context is skipped.
   Amazon Quick's conversations live in a credential-gated cloud outpost; the
-  `quick-history-export` skill installed inside Quick writes a redacted local copy to
+  `quick-session-finder` skill installed inside Quick writes a redacted local copy to
   `~/.quickwork/session-finder-export/` in WorkBuddy-compatible JSONL, which the `qk`
   source reads. Nothing reads Quick's credentials or calls its outpost API.
   Claude Code's `/btw` questions are never saved by Claude Code itself. Injected prompts (WorkBuddy's `<user_info>`, Codex's
