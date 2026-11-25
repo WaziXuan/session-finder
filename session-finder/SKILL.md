@@ -1,14 +1,14 @@
 ---
 name: session-finder
-description: Locates and reads the user's own past agent conversations across five clients — WorkBuddy, ChatGPT Codex, Claude Code, CodeBuddy CLI and Qoder CN — on this machine and, if multi-machine sync is on, on the user's other machines, by title, by anything said inside the conversation (full-text), or by session id, then extracts what was actually asked or decided, or picks up where that session left off. Use when the user refers to an earlier conversation ("that session where we analysed X", "find my earlier chat about Y", "what did I ask Codex/Claude/Qoder last week", "continue the session from my other PC", "那个分析 XXX 的会话", "上次那个 session", "找一下我之前的对话", "以前 codex/claude/qoder 里聊过的", "之前在哪个对话里提到过 XXX", "另一台电脑上聊过的", "接着那个会话干"), shows a screenshot of a session title, or when prior-session context is needed but the built-in conversation search returns nothing.
+description: Locates and reads the user's own past agent conversations across six clients — WorkBuddy, ChatGPT Codex, Claude Code, CodeBuddy CLI, Qoder CN and Google Antigravity — on this machine and, if multi-machine sync is on, on the user's other machines, by title, by anything said inside the conversation (full-text), or by session id, then extracts what was actually asked or decided, or picks up where that session left off. Use when the user refers to an earlier conversation ("that session where we analysed X", "find my earlier chat about Y", "what did I ask Codex/Claude/Qoder/Antigravity last week", "continue the session from my other PC", "那个分析 XXX 的会话", "上次那个 session", "找一下我之前的对话", "以前 codex/claude/qoder/antigravity 里聊过的", "之前在哪个对话里提到过 XXX", "另一台电脑上聊过的", "接着那个会话干"), shows a screenshot of a session title, or when prior-session context is needed but the built-in conversation search returns nothing.
 ---
 
 # Session finder
 
-Find a past session across four local stores, then read only the slice that
+Find a past session across six local stores, then read only the slice that
 matters. Never read a whole transcript into context — files reach 20 MB.
 
-## The five sources
+## The six sources
 
 | key | client | transcript location | title source |
 |-----|--------|--------------------|--------------|
@@ -17,6 +17,7 @@ matters. Never read a whole transcript into context — files reach 20 MB.
 | `cl` | Claude Code | `~/.claude/projects/<proj>/<id>.jsonl` | `{"type":"custom-title","customTitle":…}` record |
 | `cb` | CodeBuddy CLI | `~/.codebuddy/projects/<proj>/<id>.jsonl` | same records as wb; usually untitled → first prompt |
 | `qd` | Qoder CN | `~/.qoder-cn/projects/<proj>/<id>.jsonl` | same records as cl; title from the app's `main.sqlite` (`%APPDATA%/com.qodercn.app.stable`) |
+| `ag` | Google Antigravity | `~/.gemini/antigravity/brain/<id>/.system_generated/logs/transcript.jsonl` | `~/.gemini/antigravity/conversation_summaries.db` → `title` |
 
 `<proj>` is the cwd with `:` and `\` mangled (`D:\Work` → `d-Work` for wb,
 `D--Work` for cl). Access to these dot-directories is often denied to an agent's
@@ -43,7 +44,7 @@ Without `zstandard` every `.zst` session reports
 
 ```bash
 "$PY" "$S" list                        # all sources, newest first; tags look like cx|01a16eae (cb uses 13 chars: cb|01a179d5-4c09)
-"$PY" "$S" list --source cl            # all|wb|cx|cl|cb
+"$PY" "$S" list --source cl            # all|wb|cx|cl|cb|qd|ag
 "$PY" "$S" find invoice parser         # title + first prompt; title hits weigh 10, body 3
 "$PY" "$S" grep docker compose         # full text: every word must occur in the same session
 "$PY" "$S" grep "permission denied" --role user --per 5 --context 120
@@ -79,7 +80,7 @@ something that was discussed → `grep` (sessions ranked by hit count, each hit 
 the agent ran or a file it read → `grep --deep`. `grep` is case-insensitive substring
 matching and handles CJK as-is. A full local pass takes about 2 s.
 
-`show` accepts `wb|` / `cx|` / `cl|` / `cb|` prefixes or a bare id prefix (searched
+`show` accepts `wb|` / `cx|` / `cl|` / `cb|` / `qd|` / `ag|` prefixes or a bare id prefix (searched
 across sources; several matches are listed). Defaults: `--role user --head 20
 --max-chars 600`, always truncated. `find` with a quoted multi-word argument matches the
 phrase (+6) and the separate words.
@@ -114,7 +115,7 @@ Off by default. When `sync-root` prints a folder (set by the installer's `-Sync`
 `find_session.py watch` in the background (Windows: scheduled task `SessionFinderSync`;
 Linux: systemd --user `session-finder-sync`). The watcher scans every 15 s and pushes a
 session once it has been quiet for 60 s, or every 5 min while it keeps changing, plus a
-full pass every 30 min. Target: `<SessionSync>/<COMPUTERNAME>/{wb,cx,cl,cb}/…` plus an
+full pass every 30 min. Target: `<SessionSync>/<COMPUTERNAME>/{wb,cx,cl,cb,qd,ag}/…` plus an
 `_index.json` (titles, first prompts, mtimes, chunk lists, parent links). Sub-agent and
 side-chat transcripts are pushed too. Deleting a session locally does not remove it there.
 
@@ -169,8 +170,8 @@ sync folder — raw chunks, dialogue extracts, index titles. Local transcripts a
 The installed script checks `<SessionSync>/_install/session-finder/scripts/find_session.py`
 on every run (the watcher every 10 min). If its `VERSION` is higher and the file is
 complete (last line `# end of find_session.py`), it replaces itself, copies the new
-SKILL.md into the `~/.workbuddy`, `~/.claude`, `~/.codex`, `~/.codebuddy` and `~/.qoder-cn` skills, and
-reruns the same command — you may see `(session-finder 已从同步文件夹自动更新：A -> B)` on
+SKILL.md into the `~/.workbuddy`, `~/.claude`, `~/.codex`, `~/.codebuddy`, `~/.qoder-cn`
+skills and Antigravity's `~/.gemini/config/skills`, and reruns the same command — you may see `(session-finder 已从同步文件夹自动更新：A -> B)` on
 stderr; just use the output. `publish.ps1` in the repo puts a new version there.
 Set `SESSION_FINDER_NO_UPDATE=1` to skip the check.
 
@@ -208,6 +209,23 @@ Set `SESSION_FINDER_NO_UPDATE=1` to skip the check.
   with `agentType` / `description`, used as the title); tags are `cl|agent-xxxxxxxx` (14 chars).
   A forked session can carry a copy of the same sub-agent; `show` then reads the newest copy.
 - `cwd` is often missing; it's recovered from the directory name (`D--Work` → `D:\Work`).
+
+**Google Antigravity (`ag`)**
+- The IDE writes a plain jsonl mirror of the dialogue to
+  `~/.gemini/antigravity/brain/<id>/.system_generated/logs/transcript.jsonl`;
+  `USER_INPUT` is the human, `PLANNER_RESPONSE` is the model. Older turns are
+  checkpointed into `chunks/transcript/*.jsonl` and repeated in the live file —
+  duplicates are dropped by raw line, so a long chat is read only once.
+- Titles, previews, workspace folder (`workspace_uris`), parent links and agent
+  names live in `~/.gemini/antigravity/conversation_summaries.db` and change
+  without touching the transcript, so they are re-read on every pass. A nested
+  conversation with a `parent_conversation_id` is hidden under its parent unless
+  `--subagents` is given.
+- The promoted prompt is wrapped in `<USER_REQUEST>` followed by injected host
+  metadata; `show` gives you only the human's text.
+- `conversations/<id>.db` is the raw step store (protobuf blobs in `steps`). It is
+  indexed only when the jsonl log is missing, decoded for step types 14 / 15, and
+  never pushed to the sync folder — a SQLite blob cannot be redacted safely.
 
 ## Output discipline
 

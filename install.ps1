@@ -37,13 +37,19 @@ New-Item -ItemType Directory -Force -Path (Join-Path $dest 'scripts') | Out-Null
 Copy-Item (Join-Path $here 'session-finder\scripts\find_session.py') (Join-Path $dest 'scripts') -Force
 [IO.File]::WriteAllText((Join-Path $dest 'SKILL.md'), $skill, $utf8)
 
-foreach ($client in $present) {
-    if ($client -eq $homeClient) { continue }
-    $sk = Join-Path $env:USERPROFILE "$client\skills\session-finder"
+# Antigravity keeps global skills in ~/.gemini/config/skills rather than <client>/skills.
+$skillDirs = @('.workbuddy/skills', '.claude/skills', '.codex/skills', '.codebuddy/skills',
+               '.qoder-cn/skills', '.gemini/config/skills')
+foreach ($dir in $skillDirs) {
+    $parent = Split-Path (Join-Path $env:USERPROFILE $dir) -Parent
+    if (-not (Test-Path $parent)) { continue }
+    $sk = Join-Path $env:USERPROFILE "$dir\session-finder"
+    if ($sk -eq $dest) { continue }
     $extra = Get-ChildItem $sk -Force -ErrorAction SilentlyContinue | Where-Object Name -ne 'SKILL.md'
     if ($extra) {
         # An older standalone install (own scripts/.venv): move it aside, don't delete.
-        $bak = Join-Path $env:LOCALAPPDATA ("session-finder\replaced\{0}-{1:yyyyMMdd-HHmmss}" -f $client.TrimStart('.'), (Get-Date))
+        $label = $dir -replace '[\\/]', '-'
+        $bak = Join-Path $env:LOCALAPPDATA ("session-finder\replaced\{0}-{1:yyyyMMdd-HHmmss}" -f $label, (Get-Date))
         New-Item -ItemType Directory -Force -Path (Split-Path $bak) | Out-Null
         Move-Item $sk $bak
         Write-Host "      moved the old $sk to $bak"

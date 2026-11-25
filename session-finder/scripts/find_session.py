@@ -52,12 +52,14 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.11.25.1"
+VERSION = "2026.11.25.2"
 # Bump when scan() returns new fields, so cached metadata is rebuilt once.
 META_V = 4
 # The installer puts the script into the first client that has it: ~/.workbuddy,
-# else ~/.claude, ~/.codex, ~/.codebuddy, ~/.qoder-cn. The other clients get only SKILL.md.
-CLIENTS = (".workbuddy", ".claude", ".codex", ".codebuddy", ".qoder-cn")
+# else ~/.claude, ~/.codex, ~/.codebuddy, ~/.qoder-cn. The other clients get only
+# SKILL.md. Antigravity keeps global skills in ~/.gemini/config/skills/.
+CLIENTS = (".workbuddy/skills", ".claude/skills", ".codex/skills",
+           ".codebuddy/skills", ".qoder-cn/skills", ".gemini/config/skills")
 SKILL_HOME = Path(__file__).resolve().parents[1]
 END_MARK = b"# end of find_session.py"  # must stay the file's last line
 
@@ -163,6 +165,11 @@ def clean_user_text(txt: str) -> str:
     # context in front of it.
     if "<user_query>" in t:
         inner = t.split("<user_query>")[-1].split("</user_query>")[0].strip()
+        if inner:
+            return inner
+    # Antigravity wraps the prompt in <USER_REQUEST>, then appends host context.
+    if "<USER_REQUEST>" in t:
+        inner = t.split("<USER_REQUEST>")[-1].split("</USER_REQUEST>")[0].strip()
         if inner:
             return inner
     if t.lower().startswith(ENVELOPES):
@@ -316,6 +323,10 @@ class Source:
         """Facts kept outside the transcript (an app database), read every pass and never
         cached: any of title, cwd, parent, parent_src, agent. They win over scan()."""
         return {}
+
+    def pushable(self, path: Path) -> bool:
+        """False for a binary store: it cannot be appended to or redacted, so it stays local."""
+        return True
 
 
 class WB(Source):
@@ -643,10 +654,232 @@ class Qoder(Claude):
         return out
 
 
-SOURCES = {s.key: s for s in (WB(), Codex(), Claude(), CodeBuddy(), Qoder())}
+def _uri_path(uri: str) -> str:
+    """'file:///d%3A/Sandbox' -> 'D:\\Sandbox'; anything else is left alone."""
+    from urllib.parse import unquote, urlparse
+    if not uri or not isinstance(uri, str):
+        return ""
+    p = unquote(urlparse(uri).path or "")
+    if re.match(r"^/[A-Za-z]:", p):  # Windows drive path: drop the leading slash
+        return (p[1].upper() + p[2:]).replace("/", "\\")
+    return p
+
+
+def _pb_fields(buf: bytes):
+    """Walk a protobuf wire message: yield (field number, wire type, value)."""
+    i, n = 0, len(buf)
+    while i < n:
+        key = shift = 0
+        while i < n:
+            b = buf[i]
+            i += 1
+            key |= (b & 0x7F) << shift
+            shift += 7
+            if not b & 0x80:
+                break
+        else:
+            return
+        fn, wt = key >> 3, key & 7
+        if wt == 0:
+            v = shift = 0
+            while i < n:
+                b = buf[i]
+                i += 1
+                v |= (b & 0x7F) << shift
+                shift += 7
+                if not b & 0x80:
+                    break
+            else:
+                return
+            yield fn, wt, v
+        elif wt == 2:
+            ln = shift = 0
+            while i < n:
+                b = buf[i]
+                i += 1
+                ln |= (b & 0x7F) << shift
+                shift += 7
+                if not b & 0x80:
+                    break
+            else:
+                return
+            yield fn, wt, buf[i:i + ln]
+            i += ln
+        elif wt == 5:
+            yield fn, wt, buf[i:i + 4]
+            i += 4
+        elif wt == 1:
+            yield fn, wt, buf[i:i + 8]
+            i += 8
+        else:
+            return
+
+
+def _pb_msg(buf: bytes, *path: int) -> bytes:
+    """Follow a chain of field numbers into nested messages; b'' when any hop is missing."""
+    cur = buf
+    for fn in path:
+        nxt = b""
+        for f, wt, v in _pb_fields(cur):
+            if f == fn and wt == 2:
+                nxt = v
+                break
+        cur = nxt
+        if not cur:
+            return b""
+    return cur
+
+
+class Agy(Source):
+    """Google Antigravity, the agent IDE. One SQLite database per conversation under
+    conversations/, the same dialogue mirrored as plain jsonl under
+    brain/<id>/.system_generated/logs/ (checkpointed into chunks/transcript/ as it
+    grows), and titles, workspace folder and parent links in conversation_summaries.db.
+    The database is the authority for metadata; the jsonl is what can be searched."""
+    key, label = "ag", "Antigravity"
+    root = HOME / ".gemini" / "antigravity"
+    _db = None
+
+    def sessions(self):
+        logs = []
+        brain = self.root / "brain"
+        if brain.is_dir():
+            logs = sorted(brain.glob("*/.system_generated/logs/transcript.jsonl"))
+        conv = self.root / "conversations"
+        if not conv.is_dir():
+            return logs
+        # A conversation whose log was pruned is still readable step by step from its db.
+        have = {p.parents[2].name for p in logs}
+        return logs + sorted(p for p in conv.glob("*.db") if p.stem not in have)
+
+    def sid(self, path):
+        return path.stem if path.suffix == ".db" else path.parents[2].name
+
+    def db(self) -> dict:
+        """{conversation id: {title, preview, cwd, agent, parent}}, read once per run:
+        the title can be edited in the app without any transcript being touched."""
+        if Agy._db is None:
+            out: dict = {}
+            for cid, title, preview, uris, agent, parent in _sqlite_rows(
+                    self.root / "conversation_summaries.db",
+                    "select conversation_id, title, preview, workspace_uris, agent_name,"
+                    " parent_conversation_id from conversation_summaries"):
+                try:
+                    first = json.loads(uris or "[]")[0]
+                except (ValueError, IndexError, TypeError):
+                    first = ""
+                out[cid] = {"title": title or "", "preview": preview or "",
+                            "cwd": _uri_path(first), "agent": agent or "",
+                            "parent": parent or ""}
+            Agy._db = out
+        return Agy._db
+
+    def scan(self, path):
+        info = self.db().get(self.sid(path)) or {}
+        first = ""
+        if path.suffix == ".db":
+            for _idx, _st, blob in _sqlite_rows(
+                    path, "select idx, step_type, step_payload from steps"
+                          " where step_type = 14 order by idx limit 1"):
+                first = clean_user_text(_pb_msg(blob or b"", 19, 2).decode("utf-8", "replace"))
+        else:
+            for line in open_lines(path):
+                if '"USER_INPUT"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if o.get("type") == "USER_INPUT":
+                    first = clean_user_text(o.get("content"))
+                    if first:
+                        break
+        return {"title": info.get("title") or "", "cwd": info.get("cwd") or "",
+                "first_user": first or info.get("preview") or ""}
+
+    def live(self, path, meta):
+        info = self.db().get(self.sid(path)) or {}
+        out = {}
+        if info.get("title"):
+            out["title"] = info["title"]
+        if info.get("cwd"):
+            out["cwd"] = info["cwd"]
+        if info.get("parent"):
+            out.update(parent=info["parent"], agent=info.get("agent") or "subagent")
+        return out
+
+    def pushable(self, path):
+        # A SQLite file cannot be redacted or appended to, so only the jsonl log is shared.
+        return path.suffix != ".db"
+
+    def messages(self, path):
+        if path.suffix == ".db":
+            yield from self._db_messages(path)
+            return
+        parts = [path]
+        chunks = path.parent / "chunks" / "transcript"
+        if chunks.is_dir():
+            parts = sorted(chunks.glob("*.jsonl")) + parts  # checkpointed history first
+        seen = set()
+        for part in parts:
+            for line in open_lines(part):
+                if line in seen:  # the live log still holds the last checkpointed chunk
+                    continue
+                seen.add(line)
+                if '"USER_INPUT"' not in line and '"PLANNER_RESPONSE"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                kind = o.get("type")
+                if kind == "USER_INPUT":
+                    role, txt = "user", clean_user_text(o.get("content"))
+                elif kind == "PLANNER_RESPONSE":
+                    role, txt = "assistant", o.get("content") or ""
+                else:
+                    continue
+                if txt:
+                    yield o.get("created_at"), role, txt
+
+    def _db_messages(self, path):
+        """Decode the step database: step_type 14 is the human, 15 the model's answer."""
+        for _idx, step_type, blob in _sqlite_rows(
+                path, "select idx, step_type, step_payload from steps order by idx"):
+            txt = b""
+            if step_type == 14:
+                role, txt = "user", _pb_msg(blob or b"", 19, 2)
+            elif step_type == 15:
+                role, txt = "assistant", _pb_msg(blob or b"", 20, 1)
+            else:
+                continue
+            try:
+                body = txt.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                continue
+            if not body:
+                continue
+            if role == "user":
+                body = clean_user_text(body)
+                if not body:
+                    continue
+            secs = 0
+            for f, wt, v in _pb_fields(_pb_msg(blob or b"", 5, 1)):
+                if f == 1 and wt == 0:
+                    secs = v
+                    break
+            try:
+                when = datetime.fromtimestamp(secs).isoformat() if secs else None
+            except (OSError, OverflowError, ValueError):
+                when = None
+            yield when, role, body
+
+
+SOURCES = {s.key: s for s in (WB(), Codex(), Claude(), CodeBuddy(), Qoder(), Agy())}
 ALIASES = {"all": None, "wb": "wb", "workbuddy": "wb", "cx": "cx", "codex": "cx",
            "cl": "cl", "claude": "cl", "cb": "cb", "codebuddy": "cb",
-           "qd": "qd", "qoder": "qd", "qoder-cn": "qd"}
+           "qd": "qd", "qoder": "qd", "qoder-cn": "qd",
+           "ag": "ag", "antigravity": "ag", "anti-gravity": "ag"}
 
 
 def norm_source(v: str):
@@ -876,8 +1109,8 @@ def resolve(ref: str, host: str = "all"):
             k, host = k.split("@", 1)
         k = norm_source(k)
         if k not in SOURCES:
-            print(L(f"未知来源前缀：{ref.split('|')[0]}（用 wb / cx / cl / cb / qd，可加 @电脑名）",
-                    f"unknown source prefix: {ref.split('|')[0]} (use wb / cx / cl / cb / qd, optionally @HOST)"))
+            print(L(f"未知来源前缀：{ref.split('|')[0]}（用 wb / cx / cl / cb / qd / ag，可加 @电脑名）",
+                    f"unknown source prefix: {ref.split('|')[0]} (use wb / cx / cl / cb / qd / ag, optionally @HOST)"))
             return None
         hits = [r for r in index(k, host) if r["id"].startswith(sid)]
     else:
@@ -967,6 +1200,9 @@ def dialogue(r: dict, deep: bool = False):
     """
     if deep:
         target = [Path(c) for c in r["chunks"]] if r.get("chunks") else Path(r["path"])
+        if not isinstance(target, list) and target.suffix == ".db":
+            yield from SOURCES[r["src"]].messages(target)  # binary store: dialogue only
+            return
         for line in open_lines(target):
             yield None, "raw", line
         return
@@ -1103,14 +1339,22 @@ def cmd_files(a) -> int:
         return 1
     src, path, host = got
     counts: dict[str, int] = {}
+
+    def take(text: str) -> None:
+        for m in FILE_RE.finditer(text):
+            p = re.sub(r"\\{2,}", r"\\", m.group(0).rstrip("\\/"))
+            if ("\\r" in p or "\\n" in p or "##" in p or " " in p
+                    or "://" in p or p.endswith(".")):
+                continue
+            counts[p] = counts.get(p, 0) + 1
+
     try:
-        for line in open_lines(path):
-            for m in FILE_RE.finditer(line):
-                p = re.sub(r"\\{2,}", r"\\", m.group(0).rstrip("\\/"))
-                if ("\\r" in p or "\\n" in p or "##" in p or " " in p
-                        or "://" in p or p.endswith(".")):
-                    continue
-                counts[p] = counts.get(p, 0) + 1
+        if path.suffix == ".db":  # a binary store has to be decoded, not scanned line by line
+            for _ts, _role, txt in src.messages(path):
+                take(txt)
+        else:
+            for line in open_lines(path):
+                take(line)
     except RuntimeError as e:
         print(L(f"出错：{e}", f"error: {e}"))
         return 1
@@ -1207,7 +1451,7 @@ def spread_skill() -> None:
     try:
         skill = None
         for client in CLIENTS:
-            d = HOME / client / "skills" / "session-finder"
+            d = HOME / client / "session-finder"
             if not (HOME / client).is_dir() or (d / "SKILL.md").exists():
                 continue
             if skill is None:
@@ -1249,7 +1493,7 @@ def self_update() -> bool:
         write_atomic(me, data)
         skill = skill_md((bundle / "SKILL.md").read_text(encoding="utf-8"))
         for client in CLIENTS:
-            d = HOME / client / "skills" / "session-finder"
+            d = HOME / client / "session-finder"
             if (HOME / client).is_dir():
                 d.mkdir(parents=True, exist_ok=True)
                 (d / "SKILL.md").write_text(skill, encoding="utf-8", newline="")
@@ -1559,6 +1803,8 @@ def _push_session(r: dict, only, dest: Path, search: Path, state: dict, cz, red)
         st = p.stat()
         rel = p.relative_to(src.root).as_posix()
     except (OSError, ValueError):
+        return None, None, 0, 0, 0, []
+    if not src.pushable(p):
         return None, None, 0, 0, 0, []
     ent = state.get(r["path"])
     if not isinstance(ent, dict):
@@ -1872,7 +2118,7 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("list", help=L("按时间倒序列出会话", "list sessions, newest first"))
-    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd")
+    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>（同步来的其他机器）", "all|local|<computer name> (other machines, synced)"))
     p.add_argument("--limit", type=int, default=15)
     p.add_argument("--subagents", action="store_true", help=L("把子代理会话也列出来/一起搜（默认隐藏，挂在主会话下）", "include sub-agent sessions (hidden by default, linked to their parent)"))
@@ -1880,7 +2126,7 @@ def main() -> int:
 
     p = sub.add_parser("find", help=L("按标题/首问关键词搜索", "search titles and first prompts"))
     p.add_argument("keywords", nargs="+")
-    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd")
+    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>（同步来的其他机器）", "all|local|<computer name> (other machines, synced)"))
     p.add_argument("--limit", type=int, default=8)
     p.add_argument("--subagents", action="store_true", help=L("把子代理会话也列出来/一起搜（默认隐藏，挂在主会话下）", "include sub-agent sessions (hidden by default, linked to their parent)"))
@@ -1888,7 +2134,7 @@ def main() -> int:
 
     p = sub.add_parser("grep", help=L("按对话内容全文搜索（标题不记得时用）；所有关键词都要在同一会话中出现", "full-text search of what was said; every word must occur in the same session"))
     p.add_argument("keywords", nargs="+")
-    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd")
+    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>", "all|local|<computer name>"))
     p.add_argument("--role", choices=["user", "assistant", "all"], default="all")
     p.add_argument("--limit", type=int, default=8, help=L("最多列几个会话", "max sessions to list"))

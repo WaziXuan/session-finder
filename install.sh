@@ -48,11 +48,14 @@ mkdir -p "$DEST/scripts"
 skill_md "$DEST/SKILL.md"
 cp "$HERE/session-finder/scripts/find_session.py" "$FS"
 
-for client in $CLIENTS; do
-  [ "$client" != "$HOME_CLIENT" ] && [ -d "$HOME/$client" ] || continue
-  sk="$HOME/$client/skills/session-finder"
+# Antigravity keeps global skills in ~/.gemini/config/skills rather than <client>/skills.
+SHARE_DIRS=".workbuddy/skills .claude/skills .codex/skills .codebuddy/skills .qoder-cn/skills .gemini/config/skills"
+for dir in $SHARE_DIRS; do
+  [ -d "$HOME/$(dirname "$dir")" ] || continue
+  sk="$HOME/$dir/session-finder"
+  [ "$sk" != "$DEST" ] || continue
   if [ -d "$sk" ] && ls -A "$sk" | grep -qv '^SKILL.md$'; then
-    bak="$STATE/replaced/${client#.}-$(date +%Y%m%d-%H%M%S)"
+    bak="$STATE/replaced/${dir//\//-}-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$(dirname "$bak")"
     mv "$sk" "$bak"
     echo "      moved the old $sk to $bak"
