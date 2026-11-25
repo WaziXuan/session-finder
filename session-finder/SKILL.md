@@ -1,14 +1,14 @@
 ---
 name: session-finder
-description: Locates and reads the user's own past agent conversations across six clients — WorkBuddy, ChatGPT Codex, Claude Code, CodeBuddy CLI, Qoder CN and Google Antigravity — on this machine and, if multi-machine sync is on, on the user's other machines, by title, by anything said inside the conversation (full-text), or by session id, then extracts what was actually asked or decided, or picks up where that session left off. Use when the user refers to an earlier conversation ("that session where we analysed X", "find my earlier chat about Y", "what did I ask Codex/Claude/Qoder/Antigravity last week", "continue the session from my other PC", "那个分析 XXX 的会话", "上次那个 session", "找一下我之前的对话", "以前 codex/claude/qoder/antigravity 里聊过的", "之前在哪个对话里提到过 XXX", "另一台电脑上聊过的", "接着那个会话干"), shows a screenshot of a session title, or when prior-session context is needed but the built-in conversation search returns nothing.
+description: Locates and reads the user's own past agent conversations across seven clients — WorkBuddy, ChatGPT Codex, Claude Code, CodeBuddy CLI, Qoder CN, Google Antigravity and DeepSeek Harness — on this machine and, if multi-machine sync is on, on the user's other machines, by title, by anything said inside the conversation (full-text), or by session id, then extracts what was actually asked or decided, or picks up where that session left off. Use when the user refers to an earlier conversation ("that session where we analysed X", "find my earlier chat about Y", "what did I ask Codex/Claude/Qoder/Antigravity/DSH last week", "continue the session from my other PC", "那个分析 XXX 的会话", "上次那个 session", "找一下我之前的对话", "以前 codex/claude/qoder/antigravity/dsh 里聊过的", "之前在哪个对话里提到过 XXX", "另一台电脑上聊过的", "接着那个会话干"), shows a screenshot of a session title, or when prior-session context is needed but the built-in conversation search returns nothing.
 ---
 
 # Session finder
 
-Find a past session across six local stores, then read only the slice that
+Find a past session across seven local stores, then read only the slice that
 matters. Never read a whole transcript into context — files reach 20 MB.
 
-## The six sources
+## The seven sources
 
 | key | client | transcript location | title source |
 |-----|--------|--------------------|--------------|
@@ -18,6 +18,7 @@ matters. Never read a whole transcript into context — files reach 20 MB.
 | `cb` | CodeBuddy CLI | `~/.codebuddy/projects/<proj>/<id>.jsonl` | same records as wb; usually untitled → first prompt |
 | `qd` | Qoder CN | `~/.qoder-cn/projects/<proj>/<id>.jsonl` | same records as cl; title from the app's `main.sqlite` (`%APPDATA%/com.qodercn.app.stable`) |
 | `ag` | Google Antigravity | `~/.gemini/antigravity/brain/<id>/.system_generated/logs/transcript.jsonl` | `~/.gemini/antigravity/conversation_summaries.db` → `title` |
+| `ds` | DeepSeek Harness | `~/.dsh/sessions/<workspace>/session-<id>/session.v4.jsonl.zstd` | `~/.dsh/storages/session_projcache/sessions/<id>.json` → `rows.title.val` |
 
 `<proj>` is the cwd with `:` and `\` mangled (`D:\Work` → `d-Work` for wb,
 `D--Work` for cl). Access to these dot-directories is often denied to an agent's
@@ -44,7 +45,7 @@ Without `zstandard` every `.zst` session reports
 
 ```bash
 "$PY" "$S" list                        # all sources, newest first; tags look like cx|01a16eae (cb uses 13 chars: cb|01a179d5-4c09)
-"$PY" "$S" list --source cl            # all|wb|cx|cl|cb|qd|ag
+"$PY" "$S" list --source cl            # all|wb|cx|cl|cb|qd|ag|ds
 "$PY" "$S" find invoice parser         # title + first prompt; title hits weigh 10, body 3
 "$PY" "$S" grep docker compose         # full text: every word must occur in the same session
 "$PY" "$S" grep "permission denied" --role user --per 5 --context 120
@@ -80,7 +81,7 @@ something that was discussed → `grep` (sessions ranked by hit count, each hit 
 the agent ran or a file it read → `grep --deep`. `grep` is case-insensitive substring
 matching and handles CJK as-is. A full local pass takes about 2 s.
 
-`show` accepts `wb|` / `cx|` / `cl|` / `cb|` / `qd|` / `ag|` prefixes or a bare id prefix (searched
+`show` accepts `wb|` / `cx|` / `cl|` / `cb|` / `qd|` / `ag|` / `ds|` prefixes or a bare id prefix (searched
 across sources; several matches are listed). Defaults: `--role user --head 20
 --max-chars 600`, always truncated. `find` with a quoted multi-word argument matches the
 phrase (+6) and the separate words.
@@ -115,7 +116,7 @@ Off by default. When `sync-root` prints a folder (set by the installer's `-Sync`
 `find_session.py watch` in the background (Windows: scheduled task `SessionFinderSync`;
 Linux: systemd --user `session-finder-sync`). The watcher scans every 15 s and pushes a
 session once it has been quiet for 60 s, or every 5 min while it keeps changing, plus a
-full pass every 30 min. Target: `<SessionSync>/<COMPUTERNAME>/{wb,cx,cl,cb,qd,ag}/…` plus an
+full pass every 30 min. Target: `<SessionSync>/<COMPUTERNAME>/{wb,cx,cl,cb,qd,ag,ds}/…` plus an
 `_index.json` (titles, first prompts, mtimes, chunk lists, parent links). Sub-agent and
 side-chat transcripts are pushed too. Deleting a session locally does not remove it there.
 
@@ -226,6 +227,20 @@ Set `SESSION_FINDER_NO_UPDATE=1` to skip the check.
 - `conversations/<id>.db` is the raw step store (protobuf blobs in `steps`). It is
   indexed only when the jsonl log is missing, decoded for step types 14 / 15, and
   never pushed to the sync folder — a SQLite blob cannot be redacted safely.
+
+**DeepSeek Harness (`ds`)**
+- Sessions are zstd-compressed JSONL event streams, not plain dialogue: read them
+  with the script (the skill venv has `zstandard`).
+- The human's words are `goal/change` with `operation=create` → `data.goal.objective`,
+  or `user/message` whose `data.source.kind` is `user`. Other `user/message` records
+  (runtime-context, skill-catalog, time-context, tool-jobs, dsh-mcp) are injected
+  context and must not be indexed as prompts.
+- `assistant/message` → `data.message.content`; both `text` and `reasoning` blocks
+  hold useful answers, while `tool-call` blocks do not.
+- Titles and cwd are mirrored in `session_projcache`; `Greeting` is a common
+  auto-title, so prefer the first user line when it looks generic.
+- DSH uses the CodeBuddy skills folder (`~/.codebuddy/skills/`), which is already
+  covered by the installer's shared skill directories.
 
 ## Output discipline
 

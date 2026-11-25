@@ -3,11 +3,11 @@
 [中文说明](README.zh-CN.md)
 
 Find, read and continue your past AI coding-agent conversations — across **Claude Code**,
-**ChatGPT Codex**, **WorkBuddy**, **CodeBuddy CLI**, **Qoder CN** and **Google Antigravity**, and optionally across all your machines.
+**ChatGPT Codex**, **WorkBuddy**, **CodeBuddy CLI**, **Qoder CN**, **Google Antigravity** and **DeepSeek Harness**, and optionally across all your machines.
 
 Most clients store sessions as jsonl, but in different places, with different fields and
 title sources, and a single file can reach 20 MB (Antigravity keeps a jsonl log beside its
-SQLite step database). session-finder is an agent skill plus
+SQLite step database; DeepSeek Harness writes zstd-compressed event streams). session-finder is an agent skill plus
 one Python script: it indexes all of them, finds a session by title, by anything said
 in it, or by id, and reads back only the part you need — so your agent can answer
 "what did we decide in that session last week?" or "continue the session from my
@@ -173,6 +173,9 @@ from `<SessionSync>/_install` within 10 minutes.
   Antigravity's dialogue comes from `~/.gemini/antigravity/brain/<id>/.system_generated/logs/`;
   titles, workspace and parent links come from its `conversation_summaries.db`. The raw step
   databases (`conversations/<id>.db`) are indexed only when a log is missing and stay local.
+  DeepSeek Harness stores sessions as zstd-compressed JSONL event streams under
+  `~/.dsh/sessions/`; titles come from `session_projcache`. Only goal and real user
+  records are indexed — injected runtime context is skipped.
   Claude Code's `/btw` questions are never saved by Claude Code itself. Injected prompts (WorkBuddy's `<user_info>`, Codex's
   `AGENTS.md instructions`, Claude Code tool results) are filtered out of "what you said".
 - Codex's `session_index.jsonl` names only about half the sessions; the rest are titled

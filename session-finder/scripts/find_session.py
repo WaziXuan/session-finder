@@ -52,7 +52,7 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.11.25.2"
+VERSION = "2026.11.25.3"
 # Bump when scan() returns new fields, so cached metadata is rebuilt once.
 META_V = 4
 # The installer puts the script into the first client that has it: ~/.workbuddy,
@@ -190,7 +190,7 @@ def open_lines(path):
         for part in path:
             yield from open_lines(part)
         return
-    if path.suffix == ".zst":
+    if path.suffix in (".zst", ".zstd"):
         try:
             import zstandard as zstd
         except ImportError as e:  # pragma: no cover
@@ -875,11 +875,106 @@ class Agy(Source):
             yield when, role, body
 
 
-SOURCES = {s.key: s for s in (WB(), Codex(), Claude(), CodeBuddy(), Qoder(), Agy())}
+class Dsh(Source):
+    """DeepSeek Harness. Each session is a zstd-compressed JSONL event stream at
+    ~/.dsh/sessions/<workspace>/session-<uuid>/session.v4.jsonl.zstd. The human's
+    own words are in goal/change(objective) and user/message records whose
+    source.kind is 'user'; the other user-role records are injected runtime
+    context, skill catalogs and tool notices. Titles and cwd are mirrored in
+    storages/session_projcache/sessions/<id>.json."""
+    key, label = "ds", "DeepSeek Harness"
+    root = HOME / ".dsh" / "sessions"
+    _meta = None
+
+    def sessions(self):
+        return (sorted(self.root.glob("*/session-*/session.v4.jsonl.zstd"))
+                if self.root.is_dir() else [])
+
+    def sid(self, path):
+        return path.parent.name
+
+    def db(self):
+        if Dsh._meta is None:
+            out = {}
+            cache = self.root.parent / "storages" / "session_projcache" / "sessions"
+            if cache.is_dir():
+                for q in cache.glob("*.json"):
+                    try:
+                        rec = json.loads(q.read_text(encoding="utf-8")).get("record") or {}
+                        rows = rec.get("rows") or {}
+                        out[q.stem] = {
+                            "title": (rows.get("title") or {}).get("val") or "",
+                            "cwd": (rec.get("identity") or {}).get("cwd") or "",
+                        }
+                    except (OSError, ValueError):
+                        continue
+            Dsh._meta = out
+        return Dsh._meta
+
+    def scan(self, path):
+        info = self.db().get(self.sid(path)) or {}
+        first = cwd = ""
+        for line in open_lines(path):
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            typ = o.get("type")
+            if typ == "session":
+                cwd = o.get("cwd") or ""
+            elif typ == "goal/change" and (o.get("data") or {}).get("operation") == "create":
+                first = clean_user_text(((o.get("data") or {}).get("goal") or {}).get("objective") or "")
+                if first:
+                    break
+            elif typ == "user/message" and ((o.get("data") or {}).get("source") or {}).get("kind") == "user":
+                first = clean_user_text(blocks_text((o.get("data") or {}).get("content")))
+                if first:
+                    break
+        return {"title": info.get("title") or "", "cwd": cwd or info.get("cwd") or "",
+                "first_user": first or ""}
+
+    def live(self, path, meta):
+        info = self.db().get(self.sid(path)) or {}
+        out = {}
+        if info.get("title"):
+            out["title"] = info["title"]
+        if info.get("cwd"):
+            out["cwd"] = info["cwd"]
+        return out
+
+    def messages(self, path):
+        for line in open_lines(path):
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            typ, data = o.get("type"), o.get("data") or {}
+            ts = o.get("time")
+            if typ == "goal/change" and data.get("operation") == "create":
+                txt = clean_user_text((data.get("goal") or {}).get("objective") or "")
+            elif typ == "user/message":
+                if (data.get("source") or {}).get("kind") != "user":
+                    continue
+                txt = clean_user_text(blocks_text(data.get("content")))
+            elif typ == "assistant/message":
+                parts = []
+                for c in ((data.get("message") or {}).get("content") or []):
+                    if isinstance(c, dict) and c.get("type") in ("text", "reasoning") \
+                            and isinstance(c.get("text"), str):
+                        parts.append(c["text"])
+                txt = "\n".join(parts).strip()
+            else:
+                continue
+            if txt:
+                yield ts, ("assistant" if typ == "assistant/message" else "user"), txt
+
+
+SOURCES = {s.key: s for s in (WB(), Codex(), Claude(), CodeBuddy(), Qoder(), Agy(), Dsh())}
 ALIASES = {"all": None, "wb": "wb", "workbuddy": "wb", "cx": "cx", "codex": "cx",
            "cl": "cl", "claude": "cl", "cb": "cb", "codebuddy": "cb",
            "qd": "qd", "qoder": "qd", "qoder-cn": "qd",
-           "ag": "ag", "antigravity": "ag", "anti-gravity": "ag"}
+           "ag": "ag", "antigravity": "ag", "anti-gravity": "ag",
+           "ds": "ds", "dsh": "ds", "deepseek": "ds", "deepseek-harness": "ds"}
 
 
 def norm_source(v: str):
@@ -1109,8 +1204,8 @@ def resolve(ref: str, host: str = "all"):
             k, host = k.split("@", 1)
         k = norm_source(k)
         if k not in SOURCES:
-            print(L(f"未知来源前缀：{ref.split('|')[0]}（用 wb / cx / cl / cb / qd / ag，可加 @电脑名）",
-                    f"unknown source prefix: {ref.split('|')[0]} (use wb / cx / cl / cb / qd / ag, optionally @HOST)"))
+            print(L(f"未知来源前缀：{ref.split('|')[0]}（用 wb / cx / cl / cb / qd / ag / ds，可加 @电脑名）",
+                    f"unknown source prefix: {ref.split('|')[0]} (use wb / cx / cl / cb / qd / ag / ds, optionally @HOST)"))
             return None
         hits = [r for r in index(k, host) if r["id"].startswith(sid)]
     else:
@@ -1714,7 +1809,7 @@ def adopt_v1(old, p: Path, rel: str, base: Path) -> dict:
     whole-file copy already in the cloud when it ends on a line boundary."""
     if not (isinstance(old, list) and len(old) == 2):
         return {"off": 0, "n": 0, "chunks": []}
-    if p.suffix == ".zst":
+    if p.suffix in (".zst", ".zstd"):
         return {"m": old[0], "s": old[1], "chunks": [rel]} if (base / rel).exists() else {"chunks": []}
     full = rel + ".zst"
     if not (base / full).exists():
@@ -1738,7 +1833,7 @@ def push(p: Path, rel: str, base: Path, st, ent: dict, cz, red=None):
     before the offset) starts over; MAX_CHUNKS pieces are merged once the session idles.
     Offsets always refer to the local file; `red` only changes what is written.
     """
-    if p.suffix == ".zst":  # finished Codex rollout: copied whole when it changes
+    if p.suffix in (".zst", ".zstd"):  # finished rollout: copied whole when it changes
         if ent.get("chunks") and ent.get("m") == st.st_mtime and ent.get("s") == st.st_size:
             return 0, 0, []
         data = p.read_bytes()
@@ -2118,7 +2213,7 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("list", help=L("按时间倒序列出会话", "list sessions, newest first"))
-    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag")
+    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag|ds")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>（同步来的其他机器）", "all|local|<computer name> (other machines, synced)"))
     p.add_argument("--limit", type=int, default=15)
     p.add_argument("--subagents", action="store_true", help=L("把子代理会话也列出来/一起搜（默认隐藏，挂在主会话下）", "include sub-agent sessions (hidden by default, linked to their parent)"))
@@ -2126,7 +2221,7 @@ def main() -> int:
 
     p = sub.add_parser("find", help=L("按标题/首问关键词搜索", "search titles and first prompts"))
     p.add_argument("keywords", nargs="+")
-    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag")
+    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag|ds")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>（同步来的其他机器）", "all|local|<computer name> (other machines, synced)"))
     p.add_argument("--limit", type=int, default=8)
     p.add_argument("--subagents", action="store_true", help=L("把子代理会话也列出来/一起搜（默认隐藏，挂在主会话下）", "include sub-agent sessions (hidden by default, linked to their parent)"))
@@ -2134,7 +2229,7 @@ def main() -> int:
 
     p = sub.add_parser("grep", help=L("按对话内容全文搜索（标题不记得时用）；所有关键词都要在同一会话中出现", "full-text search of what was said; every word must occur in the same session"))
     p.add_argument("keywords", nargs="+")
-    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag")
+    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag|ds")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>", "all|local|<computer name>"))
     p.add_argument("--role", choices=["user", "assistant", "all"], default="all")
     p.add_argument("--limit", type=int, default=8, help=L("最多列几个会话", "max sessions to list"))
