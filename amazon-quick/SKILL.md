@@ -14,6 +14,29 @@ amazon-quick/quick-session-finder/SKILL.md
 
 That single skill covers both directions:
 
+## Prerequisites inside Quick (do these first)
+
+Quick grants file access per folder whitelist — on this machine
+`~/.quickwork/allowed_folders.db` starts empty, so the export will fail until you add
+the folder. Three steps:
+
+1. **Authorize the export folder (required for "Save")**
+   Quick → **My computer → Settings → Permissions → Folders → Add folder**, pick
+   `C:\Users\OOF\.quickwork\session-finder-export`, and enable **read + write**.
+   This folder is created by the setup; if it is missing, create it first.
+   Note: a folder attached to a synced Space is uploaded to the cloud — keep this one
+   local if you do not want Quick conversations synced.
+2. **Import the skill (required)**
+   **Settings → Capabilities → Skills → import / create**, upload
+   `quick-session-finder/SKILL.md` (the `.md` or its folder).
+3. **Enable it** in the Skills list.
+
+No "code execution" toggle is needed: Quick ships native `file_write` / `file_read` /
+`folder_create` / `ripgrep` / `fdfind` tools (confirmed in its logs), so both saving
+and searching work through those. MCP is only needed if you want part B to go through
+MCP; on this build `QuickDesktopUserMCP` is missing from the capability index, so that
+entry may not appear — it is optional.
+
 ## A. Save — Quick writes its own history (other agents can then read it)
 
 Quick's conversations live in a credential-gated cloud outpost, so no other agent
