@@ -16,26 +16,48 @@ That single skill covers both directions:
 
 ## Prerequisites inside Quick (do these first)
 
-Quick grants file access per folder whitelist — on this machine
-`~/.quickwork/allowed_folders.db` starts empty, so the export will fail until you add
-the folder. Three steps:
+**Measured on Quick 1.2.4757 (2026-11-25): the agent runs in a device sandbox.** Asked
+to read `C:\Users\OOF\.workbuddy` or run `find_session.py`, it answered that the path
+"doesn't exist on the device OOF78x" and that the sandbox "blocks running the script
+directly". So parts A and B as plain instructions do **not** work on this build — the
+sandbox does not see the real user profile.
 
-1. **Authorize the export folder (required for "Save")**
-   Quick → **My computer → Settings → Permissions → Folders → Add folder**, pick
-   `C:\Users\OOF\.quickwork\session-finder-export`, and enable **read + write**.
-   This folder is created by the setup; if it is missing, create it first.
-   Note: a folder attached to a synced Space is uploaded to the cloud — keep this one
-   local if you do not want Quick conversations synced.
-2. **Import the skill (required)**
+What is still open (from Quick's logs):
+
+- `[UserMCP] No enabled servers in config` and `[OutpostMCP] Connected 0
+  desktop-local MCP server(s)` — the user-MCP machinery exists but nothing is
+  configured.
+- `local_mcp_connect gate=resolved` — the local-MCP gate is open.
+- `QuickDesktopUserMCP` is **missing** from the QBS capability index, so the
+  "add a local MCP server" entry may not be shown in the UI at all.
+
+Therefore the only path that can cross the sandbox is **MCP**, because the MCP
+process is started by Quick's main process on real Windows, not inside the sandbox:
+the tool executes on the real `C:\Users\OOF`, while the agent only sees the tool
+results. Part B (search) fits this perfectly; part A (save) can also be exposed as an
+MCP tool that takes the conversation text and writes it locally.
+
+Also checked: `~/.quickwork/profiles/<id>/sessions/sessions.db` now exists, but
+`session_messages` has 0 rows — the dialogue is not cached locally, so reading that
+database does not substitute for an export.
+
+Steps:
+
+1. **Import the skill (still worth doing)**
    **Settings → Capabilities → Skills → import / create**, upload
-   `quick-session-finder/SKILL.md` (the `.md` or its folder).
-3. **Enable it** in the Skills list.
+   `quick-session-finder/SKILL.md`. The skill is what tells the agent to use the MCP
+   tools below.
+2. **Look for a local-MCP entry**
+   **Settings → Capabilities → MCP → + Add MCP → Local**. If it is absent, this build
+   has the user-MCP feature gated off; there is no other way to cross the sandbox —
+   stop here and wait for the feature (or a newer build).
+3. If the entry exists, register `session_finder_mcp.py` (command/args below). That is
+   the whole setup; do **not** bother authorizing `~/.quickwork/session-finder-export`
+   for the sandboxed agent, because it cannot see that path.
 
-No "code execution" toggle is needed: Quick ships native `file_write` / `file_read` /
-`folder_create` / `ripgrep` / `fdfind` tools (confirmed in its logs), so both saving
-and searching work through those. MCP is only needed if you want part B to go through
-MCP; on this build `QuickDesktopUserMCP` is missing from the capability index, so that
-entry may not appear — it is optional.
+Folder whitelist note (only relevant if a future build runs the agent unsandboxed):
+`~/.quickwork/allowed_folders.db` starts empty, so writes fail until the export folder
+is added with read+write. A folder attached to a synced Space is uploaded to the cloud.
 
 ## A. Save — Quick writes its own history (other agents can then read it)
 
