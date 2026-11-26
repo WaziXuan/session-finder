@@ -76,6 +76,19 @@ linked to the session it belongs to:
   `[continued]`. Qoder side chats are `[side]`, automation runs are hidden as sub-agents.
 - Claude Code's `/btw` side questions are never written to disk, so they cannot be found.
 
+**Sessions that read other sessions.** When a session runs this script's `show <tag>` or
+`files <tag>` in one of its own tool calls, the two are linked both ways, on every machine,
+with no extra step: the reader's index entry keeps the tag it read (`refs`), and the target
+finds its readers by looking those up.
+- `list` / `find` rows say `→ read N session(s) · ← read by M session(s)`.
+- `show` ends with the sessions this one read (`→`) and the sessions that read it (`←`),
+  each with its tag and when it was read. Follow either with `show <tag>`; no need to
+  `grep` for which session an earlier one looked at.
+- A tag without `@HOST` means the reader's own machine. A tag from another machine that is
+  not synced yet is listed as `(not in the index)`.
+- Only commands count, not text that quotes them, so reading a transcript that mentions
+  `show cl|…` does not create a link.
+
 **Which one**: remember the title or the first question → `find`; remember only
 something that was discussed → `grep` (sessions ranked by hit count, each hit with
 80 chars of context on each side; then `show --grep` for more); looking for a command

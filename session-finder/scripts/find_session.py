@@ -52,9 +52,9 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.11.25.4"
+VERSION = "2026.11.26.1"
 # Bump when scan() returns new fields, so cached metadata is rebuilt once.
-META_V = 4
+META_V = 5
 # The installer puts the script into the first client that has it: ~/.workbuddy,
 # else ~/.claude, ~/.codex, ~/.codebuddy, ~/.qoder-cn. The other clients get only
 # SKILL.md. Antigravity keeps global skills in ~/.gemini/config/skills/.
@@ -291,6 +291,72 @@ def parent_link(path: Path) -> dict:
     if isinstance(obj.get("title"), str) and obj["title"]:
         link["title"] = obj["title"]
     return link
+
+
+# A session that read another one through this script: `show <tag>` / `files <tag>` in
+# one of its own tool calls. The scan keeps these as the session's forward links
+# ("refs"); index() inverts them into back links, so both ends know each other
+# without anyone searching the transcript again.
+REF_KEYS = ("command", "cmd", "arguments", "commandline", "script", "code", "input")
+REF_RE = re.compile(
+    r"\b(show|files)\s+\\*[\"']?\\*[\"']?"
+    r"((?:wb|cx|cl|cb|qd|ag|ds|qk)(?:@[A-Za-z0-9_.-]+)?\|[0-9A-Za-z][0-9A-Za-z_-]{3,})")
+MAX_REFS = 50
+
+
+def _cmd_strings(obj, depth: int = 0):
+    """Strings a record passes to a tool as a command: values under keys such as
+    command / cmd / arguments, at any depth. Tool output and dialogue are not under
+    these keys, so a transcript that only quotes a `show` line does not count."""
+    if depth > 8:
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(k, str) and k.lower() in REF_KEYS:
+                if isinstance(v, str):
+                    yield v
+                elif isinstance(v, list):
+                    yield " ".join(x for x in v if isinstance(x, str))
+                elif isinstance(v, dict):
+                    yield json.dumps(v, ensure_ascii=False)
+            if isinstance(v, (dict, list)):
+                yield from _cmd_strings(v, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _cmd_strings(v, depth + 1)
+
+
+def scan_refs(path) -> list:
+    """[{"tag", "cmd", "ts"}] for each session this transcript read with the script,
+    first time each, in order. Only lines that could hold such a call are parsed."""
+    refs, seen = [], set()
+    try:
+        for line in open_lines(path):
+            if "|" not in line or ("show" not in line and "files" not in line):
+                continue
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            ts = ""
+            if isinstance(o, dict):
+                ts = o.get("timestamp") or o.get("ts") or ""
+            for s in _cmd_strings(o):
+                # The script by name, or "$S" as SKILL.md sets it (possibly in an
+                # earlier call of the same shell).
+                if "find_session" not in s and "session-finder" not in s and "$S" not in s:
+                    continue
+                for m in REF_RE.finditer(s):
+                    tag = m.group(2)
+                    if tag in seen:
+                        continue
+                    seen.add(tag)
+                    refs.append({"tag": tag, "cmd": m.group(1), "ts": ts if isinstance(ts, str) else ""})
+                    if len(refs) >= MAX_REFS:
+                        return refs
+    except (OSError, RuntimeError):
+        pass
+    return refs
 
 
 def guess_cwd_from_dirname(name: str) -> str:
@@ -1050,6 +1116,10 @@ def local_rows(only=None) -> list[dict]:
                     meta = src.scan(p)
                 except RuntimeError as e:
                     meta = {"title": "(unreadable)", "cwd": "", "first_user": str(e)}
+                if p.suffix != ".db":
+                    refs = scan_refs(p)
+                    if refs:
+                        meta = {**meta, "refs": refs}
                 meta = {**meta, "m": st.st_mtime, "s": st.st_size, "v": META_V}
                 cache[key] = meta
             real_title = meta.get("title") or ""
@@ -1087,6 +1157,8 @@ def local_rows(only=None) -> list[dict]:
             }
             if parent_src:
                 row["parent_src"] = parent_src
+            if meta.get("refs"):
+                row["refs"] = meta["refs"]
             rows.append(row)
     save_cache(cache)
     return rows
@@ -1206,7 +1278,64 @@ def parent_tag(r: dict) -> str:
     return tag_of({**r, "src": r.get("parent_src") or r["src"], "id": p})
 
 
-def fmt(rows: list[dict], full_id: bool = False, kids: dict | None = None) -> str:
+def row_key(r: dict) -> tuple:
+    return (r["src"], (r.get("host") or HOST).upper(), r["id"])
+
+
+def links_of(rows: list[dict]) -> tuple[dict, dict]:
+    """Resolve every row's refs against rows. Returns (out, back), both keyed by
+    row_key(): out[k] = [(ref, target row or None)], back[k] = [(reader row, ref)].
+
+    A tag without @HOST means the reader's own machine. A prefix shared by a session
+    and its sub-agents means the session; otherwise the newest match wins."""
+    by: dict = {}
+    for r in rows:
+        by.setdefault((r["src"], (r.get("host") or HOST).upper()), []).append(r)
+    out: dict = {}
+    back: dict = {}
+    for r in rows:
+        if not r.get("refs"):
+            continue
+        me = row_key(r)
+        done = set()
+        for ref in r["refs"]:
+            tag = ref.get("tag") or ""
+            if "|" not in tag:
+                continue
+            k, pre = tag.split("|", 1)
+            src, _, host = k.partition("@")
+            host = (host or r.get("host") or HOST).upper()
+            hits = [x for x in by.get((src, host), ()) if x["id"].startswith(pre)]
+            if len(hits) > 1:
+                hits = [x for x in hits if not is_sub(x)] or hits
+                hits.sort(key=lambda x: x["mtime"], reverse=True)
+            t = hits[0] if hits else None
+            if not t and host == HOST and r.get("host") in ("", None, HOST):
+                continue  # a local session that is not here: deleted, or a made-up id
+            tk = row_key(t) if t else ("?", host, tag)
+            if tk == me or tk in done:
+                continue
+            done.add(tk)
+            out.setdefault(me, []).append((ref, t))
+            if t:
+                back.setdefault(tk, []).append((r, ref))
+    for v in back.values():
+        v.sort(key=lambda x: x[0]["mtime"], reverse=True)
+    return out, back
+
+
+def link_count_note(r: dict, links) -> str:
+    if not links:
+        return ""
+    k = row_key(r)
+    n_out, n_in = len(links[0].get(k, ())), len(links[1].get(k, ()))
+    parts = ([L(f"→ 读过 {n_out} 个会话", f"→ read {n_out} session(s)")] if n_out else []) + \
+            ([L(f"← 被 {n_in} 个会话读过", f"← read by {n_in} session(s)")] if n_in else [])
+    return " · ".join(parts)
+
+
+def fmt(rows: list[dict], full_id: bool = False, kids: dict | None = None,
+        links: tuple | None = None) -> str:
     out = []
     w = max([12] + [len(tag_of(r, full_id)) for r in rows])
     for r in rows:
@@ -1223,6 +1352,9 @@ def fmt(rows: list[dict], full_id: bool = False, kids: dict | None = None) -> st
                     ([L(f"{n_imp} 份 Qoder 导入副本", f"{n_imp} Qoder import(s)")] if n_imp else []) + \
                     ([L(f"{n_sub} 个子代理", f"{n_sub} sub-agent(s)")] if n_sub else [])
             out.append(f"{'':{w}} {'':16}  {'':>7}  + {', '.join(parts)}{L('（show 末尾列出）', ' (listed at the end of show)')}")
+        note = link_count_note(r, links)
+        if note:
+            out.append(f"{'':{w}} {'':16}  {'':>7}  {note}{L('（show 末尾列出）', ' (listed at the end of show)')}")
         if r["cwd"]:
             out.append(f"{'':{w}} {'':16}  {'':>7}  cwd={r['cwd']}")
         if r["first_user"]:
@@ -1274,7 +1406,7 @@ def chunk_label(path) -> str:
 
 
 def cmd_list(a) -> int:
-    rows = index(norm_source(a.source), a.host)
+    rows = all_rows = index(norm_source(a.source), a.host)
     kids = children_of(rows)
     n_sub = sum(map(is_sub, rows))
     if not a.subagents:
@@ -1284,7 +1416,7 @@ def cmd_list(a) -> int:
         print(L(f"#（另有 {n_sub} 个子代理会话没列出，加 --subagents 显示）",
                 f"# ({n_sub} sub-agent sessions hidden, --subagents shows them)"))
     print()
-    print(fmt(rows[: a.limit], kids=kids))
+    print(fmt(rows[: a.limit], kids=kids, links=links_of(all_rows)))
     return 0
 
 
@@ -1316,7 +1448,7 @@ def cmd_find(a) -> int:
         return 1
     scored.sort(key=lambda x: (-x[0], x[1]["mtime"]))
     print(L(f"# {len(scored)} 个匹配，最相关的在前\n", f"# {len(scored)} match(es), best first\n"))
-    print(fmt([r for _, r in scored[: a.limit]], kids=kids))
+    print(fmt([r for _, r in scored[: a.limit]], kids=kids, links=links_of(all_rows)))
     return 0
 
 
@@ -1455,10 +1587,32 @@ def cmd_show(a) -> int:
                 print(f"  {tag_of(r)}  {r['mtime']}  {r['title']}")
             if len(kids) > 30:
                 print(f"  … +{len(kids) - 30}")
+        print_links(me)
     if not shown:
         print(L("（没有符合条件的消息）", "(no message matched the filter)"))
         return 1
     return 0
+
+
+def print_links(me: dict) -> None:
+    """show's footer: sessions this one read, and sessions that read this one.
+    Always resolved over every machine: a reader can sit on any of them."""
+    out, back = links_of(index(None, "all"))
+    k = row_key(me)
+    reads, readers = out.get(k, []), back.get(k, [])
+    if reads:
+        print(L(f"\n# 这个会话读过的 {len(reads)} 个会话（→）：", f"\n# {len(reads)} session(s) this one read (→):"))
+        for ref, t in reads[:30]:
+            when = stamp(ref.get("ts")) if ref.get("ts") else ""
+            if t:
+                print(f"  → {tag_of(t)}  {t['mtime']}  {t['title']}  [{ref.get('cmd')}{' ' + when if when else ''}]")
+            else:
+                print(f"  → {ref.get('tag')}  {L('（索引里找不到）', '(not in the index)')}  [{ref.get('cmd')}{' ' + when if when else ''}]")
+    if readers:
+        print(L(f"\n# 读过这个会话的 {len(readers)} 个会话（←）：", f"\n# {len(readers)} session(s) that read this one (←):"))
+        for r, ref in readers[:30]:
+            when = stamp(ref.get("ts")) if ref.get("ts") else ""
+            print(f"  ← {tag_of(r)}  {r['mtime']}  {r['title']}  [{ref.get('cmd')}{' ' + when if when else ''}]")
 
 
 def cmd_files(a) -> int:
@@ -2012,6 +2166,7 @@ def sync_once(only=None) -> tuple[int, str]:
                 **(link if r.get("parent") else {}),
                 "title": r["title"], "has_title": r["has_title"], "cwd": r["cwd"],
                 "first_user": r["first_user"][:500], "bytes": st.st_size, "mtime": r["mtime"],
+                **({"refs": r["refs"]} if r.get("refs") else {}),
             })
     # Keep entries for sessions already pushed but since deleted locally.
     try:

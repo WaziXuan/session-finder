@@ -184,6 +184,9 @@ from `<SessionSync>/_install` within 10 minutes.
   source reads. Nothing reads Quick's credentials or calls its outpost API.
   Claude Code's `/btw` questions are never saved by Claude Code itself. Injected prompts (WorkBuddy's `<user_info>`, Codex's
   `AGENTS.md instructions`, Claude Code tool results) are filtered out of "what you said".
+- Sessions that read each other are linked both ways: when a session runs `show <tag>` /
+  `files <tag>` in a tool call, `list` shows `→ read N` on it and `← read by M` on the target,
+  and `show` ends with both lists. Only real tool calls count, not quoted text.
 - Codex's `session_index.jsonl` names only about half the sessions; the rest are titled
   by their first prompt.
 - Messages follow the system language (Chinese or English); set `SESSION_FINDER_LANG=en`
