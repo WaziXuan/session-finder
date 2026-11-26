@@ -3,12 +3,11 @@
 [中文说明](README.zh-CN.md)
 
 Find, read and continue your past AI coding-agent conversations — across **Claude Code**,
-**ChatGPT Codex**, **WorkBuddy**, **CodeBuddy CLI**, **Qoder CN**, **Google Antigravity**, **DeepSeek Harness** and **Amazon Quick**, and optionally across all your machines.
+**ChatGPT Codex**, **WorkBuddy**, **CodeBuddy CLI**, **Qoder CN**, **Google Antigravity** and **DeepSeek Harness**, and optionally across all your machines.
 
 Most clients store sessions as jsonl, but in different places, with different fields and
 title sources, and a single file can reach 20 MB (Antigravity keeps a jsonl log beside its
-SQLite step database; DeepSeek Harness writes zstd-compressed event streams). Amazon Quick
-does not expose a local transcript, so its `quick-session-finder` skill writes one for you.
+SQLite step database; DeepSeek Harness writes zstd-compressed event streams).
 session-finder is an agent skill plus
 one Python script: it indexes all of them, finds a session by title, by anything said
 in it, or by id, and reads back only the part you need — so your agent can answer
@@ -178,10 +177,6 @@ from `<SessionSync>/_install` within 10 minutes.
   DeepSeek Harness stores sessions as zstd-compressed JSONL event streams under
   `~/.dsh/sessions/`; titles come from `session_projcache`. Only goal and real user
   records are indexed — injected runtime context is skipped.
-  Amazon Quick's conversations live in a credential-gated cloud outpost; the
-  `quick-session-finder` skill installed inside Quick writes a redacted local copy to
-  `~/.quickwork/session-finder-export/` in WorkBuddy-compatible JSONL, which the `qk`
-  source reads. Nothing reads Quick's credentials or calls its outpost API.
   Claude Code's `/btw` questions are never saved by Claude Code itself. Injected prompts (WorkBuddy's `<user_info>`, Codex's
   `AGENTS.md instructions`, Claude Code tool results) are filtered out of "what you said".
 - Sessions that read each other are linked both ways: when a session runs `show <tag>` /

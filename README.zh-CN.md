@@ -2,10 +2,10 @@
 
 [English](README.md)
 
-把散在 **Claude Code**、**ChatGPT Codex**、**WorkBuddy**、**CodeBuddy CLI**、**Qoder CN**、**Google Antigravity**、**DeepSeek Harness**、**Amazon Quick** 里的历史会话找回来、
+把散在 **Claude Code**、**ChatGPT Codex**、**WorkBuddy**、**CodeBuddy CLI**、**Qoder CN**、**Google Antigravity**、**DeepSeek Harness** 里的历史会话找回来、
 读出来、接着干——可选跨多台电脑。
 
-多数客户端都把对话存成 jsonl，但位置、字段、标题来源各不相同，单个文件能到 20 MB；Antigravity 则在 SQLite 步骤库旁边也写一份 jsonl 日志；DeepSeek Harness 写的是 zstd 压缩的事件流。Amazon Quick 不提供本地会话文件，靠它内置的 `quick-session-finder` 技能把对话导出到本地。
+多数客户端都把对话存成 jsonl，但位置、字段、标题来源各不相同，单个文件能到 20 MB；Antigravity 则在 SQLite 步骤库旁边也写一份 jsonl 日志；DeepSeek Harness 写的是 zstd 压缩的事件流。
 session-finder 是一个 agent skill 加一个 Python 脚本：建索引，按标题、对话内容或 id
 定位，只把需要的那几段读出来。这样你的 agent 能回答「上周那个会话最后定了什么」
 「把笔记本上那个会话接着做」，又不会把上下文撑爆。
@@ -126,7 +126,7 @@ python find_session.py redact-add vps-root-password     # 会让你输两次
 
 - 会话文件只读。脚本只写自己的缓存/日志/状态目录（`%LOCALAPPDATA%\session-finder\` 或
   `~/.cache/session-finder/`），开了同步时再加 `<SessionSync>/<本机名>/`。
-- 子代理的记录（Claude Code 的 `subagents/`、Codex 的「Guardian review」和派生代理）都会索引和同步，但 `list` / `find` / `grep` 默认隐藏（加 `--subagents` 才显示），否则会淹没所有搜索结果；每条都挂在主会话下，`show <主会话>` 末尾会列出来。Codex 和 Qoder 的侧旁对话照常列出，标 `[side]`。Qoder CN 从 WorkBuddy / Codex 导入的会话副本也同样默认隐藏（标 `[import]`，挂在原会话下），在 Qoder 里接着聊过的才照常列出（`[continued]`）；Qoder 的标题从它的 `main.sqlite` 只读读取。Antigravity 的正文来自 `~/.gemini/antigravity/brain/<id>/.system_generated/logs/`，标题、工作区和父子关系来自 `conversation_summaries.db`；原始步骤库 `conversations/<id>.db` 只在日志缺失时才解析，且不会同步出去。DeepSeek Harness 的会话是 `~/.dsh/sessions/` 下 zstd 压缩的事件流，标题来自 `session_projcache`；只索引目标和真实用户消息，跳过注入的运行时上下文。Amazon Quick 的会话在需要凭据的云端 outpost 里，装在 Quick 内的 `quick-session-finder` 技能会把脱敏副本以 WorkBuddy 兼容的 JSONL 写到 `~/.quickwork/session-finder-export/`，由 `qk` 来源读取——全程不碰 Quick 凭据、不调它的 outpost API。Claude Code 的 `/btw` 侧问本身不落盘，找不到。
+- 子代理的记录（Claude Code 的 `subagents/`、Codex 的「Guardian review」和派生代理）都会索引和同步，但 `list` / `find` / `grep` 默认隐藏（加 `--subagents` 才显示），否则会淹没所有搜索结果；每条都挂在主会话下，`show <主会话>` 末尾会列出来。Codex 和 Qoder 的侧旁对话照常列出，标 `[side]`。Qoder CN 从 WorkBuddy / Codex 导入的会话副本也同样默认隐藏（标 `[import]`，挂在原会话下），在 Qoder 里接着聊过的才照常列出（`[continued]`）；Qoder 的标题从它的 `main.sqlite` 只读读取。Antigravity 的正文来自 `~/.gemini/antigravity/brain/<id>/.system_generated/logs/`，标题、工作区和父子关系来自 `conversation_summaries.db`；原始步骤库 `conversations/<id>.db` 只在日志缺失时才解析，且不会同步出去。DeepSeek Harness 的会话是 `~/.dsh/sessions/` 下 zstd 压缩的事件流，标题来自 `session_projcache`；只索引目标和真实用户消息，跳过注入的运行时上下文。Claude Code 的 `/btw` 侧问本身不落盘，找不到。
 - 会话之间互读会双向挂链：一个会话在工具调用里跑了 `show <标签>` / `files <标签>`，`list` 里它那行显示「→ 读过 N 个会话」，被读的那行显示「← 被 M 个会话读过」，`show` 末尾两边都列出来。只认真正的工具调用，转述的文字不算。
   注入的提示词（WorkBuddy 的 `<user_info>`、Codex 的 `AGENTS.md instructions`、Claude Code
   的工具结果）不算作「你说的话」。

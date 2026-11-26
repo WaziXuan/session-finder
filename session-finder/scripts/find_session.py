@@ -52,7 +52,7 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.11.26.2"
+VERSION = "2026.11.26.3"
 # Bump when scan() returns new fields, so cached metadata is rebuilt once.
 META_V = 5
 # The installer puts the script into the first client that has it: ~/.workbuddy,
@@ -300,7 +300,7 @@ def parent_link(path: Path) -> dict:
 REF_KEYS = ("command", "cmd", "arguments", "commandline", "script", "code", "input")
 REF_RE = re.compile(
     r"\b(show|files)\s+\\*[\"']?\\*[\"']?"
-    r"((?:wb|cx|cl|cb|qd|ag|ds|qk)(?:@[A-Za-z0-9_.-]+)?\|[0-9A-Za-z][0-9A-Za-z_-]{3,})")
+    r"((?:wb|cx|cl|cb|qd|ag|ds)(?:@[A-Za-z0-9_.-]+)?\|[0-9A-Za-z][0-9A-Za-z_-]{3,})")
 MAX_REFS = 50
 
 
@@ -1035,45 +1035,12 @@ class Dsh(Source):
                 yield ts, ("assistant" if typ == "assistant/message" else "user"), txt
 
 
-class Qk(WB):
-    """Amazon Quick Desktop. The Quick History Export skill writes one WB-shaped
-    jsonl per conversation to ~/.quickwork/session-finder-export/. A leading
-    {"type":"meta"} record carries id, title, cwd and export time; the remaining
-    user/assistant turns are identical to WorkBuddy's, so WB's reader is reused.
-    No credentials or cloud API are involved — Quick itself writes the file."""
-    key, label = "qk", "Amazon Quick"
-    root = HOME / ".quickwork" / "session-finder-export"
-
-    def sessions(self):
-        return sorted(self.root.glob("*.jsonl")) if self.root.is_dir() else []
-
-    def scan(self, path):
-        base = super().scan(path)
-        for line in open_lines(path):
-            if '"meta"' not in line:
-                continue
-            try:
-                o = json.loads(line)
-            except ValueError:
-                continue
-            if o.get("type") == "meta":
-                if o.get("title"):
-                    base["title"] = o["title"]
-                if o.get("cwd"):
-                    base["cwd"] = o["cwd"]
-                break
-        if base.get("cwd") == "session-finder-export":
-            base["cwd"] = ""
-        return base
-
-
-SOURCES = {s.key: s for s in (WB(), Codex(), Claude(), CodeBuddy(), Qoder(), Agy(), Dsh(), Qk())}
+SOURCES = {s.key: s for s in (WB(), Codex(), Claude(), CodeBuddy(), Qoder(), Agy(), Dsh())}
 ALIASES = {"all": None, "wb": "wb", "workbuddy": "wb", "cx": "cx", "codex": "cx",
            "cl": "cl", "claude": "cl", "cb": "cb", "codebuddy": "cb",
            "qd": "qd", "qoder": "qd", "qoder-cn": "qd",
            "ag": "ag", "antigravity": "ag", "anti-gravity": "ag",
-           "ds": "ds", "dsh": "ds", "deepseek": "ds", "deepseek-harness": "ds",
-           "qk": "qk", "quick": "qk", "amazon-quick": "qk", "aws-quick": "qk"}
+           "ds": "ds", "dsh": "ds", "deepseek": "ds", "deepseek-harness": "ds"}
 
 
 def norm_source(v: str):
@@ -2408,7 +2375,7 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("list", help=L("按时间倒序列出会话", "list sessions, newest first"))
-    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag|ds|qk")
+    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag|ds")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>（同步来的其他机器）", "all|local|<computer name> (other machines, synced)"))
     p.add_argument("--limit", type=int, default=15)
     p.add_argument("--subagents", action="store_true", help=L("把子代理会话也列出来/一起搜（默认隐藏，挂在主会话下）", "include sub-agent sessions (hidden by default, linked to their parent)"))
@@ -2416,7 +2383,7 @@ def main() -> int:
 
     p = sub.add_parser("find", help=L("按标题/首问关键词搜索", "search titles and first prompts"))
     p.add_argument("keywords", nargs="+")
-    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag|ds|qk")
+    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag|ds")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>（同步来的其他机器）", "all|local|<computer name> (other machines, synced)"))
     p.add_argument("--limit", type=int, default=8)
     p.add_argument("--subagents", action="store_true", help=L("把子代理会话也列出来/一起搜（默认隐藏，挂在主会话下）", "include sub-agent sessions (hidden by default, linked to their parent)"))
@@ -2424,7 +2391,7 @@ def main() -> int:
 
     p = sub.add_parser("grep", help=L("按对话内容全文搜索（标题不记得时用）；所有关键词都要在同一会话中出现", "full-text search of what was said; every word must occur in the same session"))
     p.add_argument("keywords", nargs="+")
-    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag|ds|qk")
+    p.add_argument("--source", default="all", help="all|wb|cx|cl|cb|qd|ag|ds")
     p.add_argument("--host", default="all", help=L("all|local|<电脑名>", "all|local|<computer name>"))
     p.add_argument("--role", choices=["user", "assistant", "all"], default="all")
     p.add_argument("--limit", type=int, default=8, help=L("最多列几个会话", "max sessions to list"))
