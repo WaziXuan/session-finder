@@ -128,9 +128,11 @@ current session in this order (works in any client, from any machine):
   - go back (`→`): for each session it read, `show <tag> --role all --tail 8 --max-chars 800`
     — its end and conclusions only, never the whole thing. Repeat on their `→` lists, at most
     3 levels back, skipping any tag already read;
-  - look forward (`←`): read at least the newest reader the same way, since it may have moved
-    the work on and the session you were given may be out of date. Older readers only if the
-    user wants them;
+  - look forward (`←`): the work may have moved on in a later session, so the one you were
+    given can be out of date. Read its newest reader the same way, then that session's newest
+    reader, and so on until a session has no reader left — at most 3 levels forward, skipping
+    any tag already read. The last session on that chain holds the latest state. Older
+    readers only if the user wants them;
   - then tell the user which sessions you followed (tag + one line each) and which one holds
     the latest state, before carrying on from there.
 

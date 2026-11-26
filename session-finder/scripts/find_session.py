@@ -52,7 +52,7 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.11.26.4"
+VERSION = "2026.11.26.5"
 # Bump when scan() returns new fields, so cached metadata is rebuilt once.
 META_V = 5
 # The installer puts the script into the first client that has it: ~/.workbuddy,
