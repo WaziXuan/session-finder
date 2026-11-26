@@ -1,6 +1,6 @@
 ---
 name: session-finder
-description: Locates and reads the user's own past agent conversations across seven clients — WorkBuddy, ChatGPT Codex, Claude Code, CodeBuddy CLI, Qoder CN, Google Antigravity and DeepSeek Harness — on this machine and, if multi-machine sync is on, on the user's other machines, by title, by anything said inside the conversation (full-text), or by session id, then extracts what was actually asked or decided, or picks up where that session left off. Use when the user refers to an earlier conversation ("that session where we analysed X", "find my earlier chat about Y", "what did I ask Codex/Claude/Qoder/Antigravity/DSH last week", "continue the session from my other PC", "那个分析 XXX 的会话", "上次那个 session", "找一下我之前的对话", "以前 codex/claude/qoder/antigravity/dsh 里聊过的", "之前在哪个对话里提到过 XXX", "另一台电脑上聊过的", "接着那个会话干"), shows a screenshot of a session title, or when prior-session context is needed but the built-in conversation search returns nothing.
+description: Locates and reads the user's own past agent conversations across seven clients — WorkBuddy, ChatGPT Codex, Claude Code, CodeBuddy CLI, Qoder CN, Google Antigravity and DeepSeek Harness — on this machine and, if multi-machine sync is on, on the user's other machines, by title, by anything said inside the conversation (full-text), or by session id, then extracts what was actually asked or decided, or picks up where that session left off. Use when the user refers to an earlier conversation ("that session where we analysed X", "find my earlier chat about Y", "what did I ask Codex/Claude/Qoder/Antigravity/DSH last week", "continue the session from my other PC", "那个分析 XXX 的会话", "上次那个 session", "找一下我之前的对话", "以前 codex/claude/qoder/antigravity/dsh 里聊过的", "之前在哪个对话里提到过 XXX", "另一台电脑上聊过的", "接着那个会话干", "连同 linked session 一起读", "和它关联的会话一起读"), shows a screenshot of a session title, or when prior-session context is needed but the built-in conversation search returns nothing.
 ---
 
 # Session finder
@@ -117,6 +117,22 @@ current session in this order (works in any client, from any machine):
    (`D:\…` vs `~/…`) need mapping to this machine; say so if you can't find them.
 5. Missing detail: `show <tag> --role all --grep <word>`, never the whole transcript.
 6. Tell the user in two or three sentences what state you understood and the next step, then carry on.
+
+**Linked sessions — only when the user asks.** `show` ends with the sessions this one read
+(`→`) and the sessions that read it (`←`), see "Sessions that read other sessions" above.
+- The user did not mention them: read only the session they named. If the footer lists
+  links, say so in one line ("it read 2 sessions; 1 later session continued from it — read
+  them too?") and do not read them yourself.
+- The user says "with its linked sessions", "连同 linked session", "和它关联的会话一起读",
+  "顺着链接读" or the like: also
+  - go back (`→`): for each session it read, `show <tag> --role all --tail 8 --max-chars 800`
+    — its end and conclusions only, never the whole thing. Repeat on their `→` lists, at most
+    3 levels back, skipping any tag already read;
+  - look forward (`←`): read at least the newest reader the same way, since it may have moved
+    the work on and the session you were given may be out of date. Older readers only if the
+    user wants them;
+  - then tell the user which sessions you followed (tag + one line each) and which one holds
+    the latest state, before carrying on from there.
 
 A session on another machine may still be in progress: the synced copy lags a few
 minutes (pushes at most every 5 min, plus the sync client's own delay), so say how
