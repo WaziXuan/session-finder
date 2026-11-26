@@ -52,7 +52,7 @@ SYNC_LOG = STATE_DIR / "sync.log"
 HOST = (os.environ.get("COMPUTERNAME") or platform.node().split(".")[0] or "unknown").upper()
 # Bump on every publish to SessionSync\_install: installed copies compare against it
 # and update themselves (see self_update).
-VERSION = "2026.11.26.1"
+VERSION = "2026.11.26.2"
 # Bump when scan() returns new fields, so cached metadata is rebuilt once.
 META_V = 5
 # The installer puts the script into the first client that has it: ~/.workbuddy,
@@ -1720,6 +1720,13 @@ def skill_md(text: str) -> str:
     return text.replace(".workbuddy/skills/session-finder", f"{SKILL_HOME.parent.parent.name}/skills/session-finder")
 
 
+def client_present(client: str) -> bool:
+    """The client is installed when its home exists (~/.claude, ~/.gemini/config), even if
+    its skills folder has not been made yet: Antigravity creates ~/.gemini/config/skills
+    only once a skill is added, so waiting for that folder means never getting SKILL.md."""
+    return (HOME / client).parent.is_dir()
+
+
 def installed() -> bool:
     """An installed copy sits in <client>/skills/session-finder/scripts; a checkout doesn't."""
     return SKILL_HOME.parent.name == "skills"
@@ -1734,7 +1741,7 @@ def spread_skill() -> None:
         skill = None
         for client in CLIENTS:
             d = HOME / client / "session-finder"
-            if not (HOME / client).is_dir() or (d / "SKILL.md").exists():
+            if not client_present(client) or (d / "SKILL.md").exists():
                 continue
             if skill is None:
                 skill = (SKILL_HOME / "SKILL.md").read_text(encoding="utf-8")
@@ -1776,7 +1783,7 @@ def self_update() -> bool:
         skill = skill_md((bundle / "SKILL.md").read_text(encoding="utf-8"))
         for client in CLIENTS:
             d = HOME / client / "session-finder"
-            if (HOME / client).is_dir():
+            if client_present(client):
                 d.mkdir(parents=True, exist_ok=True)
                 (d / "SKILL.md").write_text(skill, encoding="utf-8", newline="")
     except OSError as e:
